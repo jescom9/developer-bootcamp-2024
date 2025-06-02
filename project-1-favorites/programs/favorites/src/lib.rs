@@ -1,65 +1,91 @@
+// programs/favorites/src/lib.rs
 use anchor_lang::prelude::*;
-// Our program's address!
-// This matches the key in the target/deploy directory
-declare_id!("ww9C83noARSQVBnqmCUmaVdbJjmiwcV9j2LkXYMoUCV");
 
-// Anchor programs always use 8 bits for the discriminator
-pub const ANCHOR_DISCRIMINATOR_SIZE: usize = 8;
+declare_id!("8tqMBrKPc1p3XTo27d3ytxPyUyZ31mF3LpfG26WvYahf");
 
-// Our Solana program! 
 #[program]
 pub mod favorites {
     use super::*;
 
-    // Our instruction handler! It sets the user's favorite number and color
-    pub fn set_favorites(context: Context<SetFavorites>, number: u64, color: String, hobbies: Vec<String>) -> Result<()> {
-        let user_public_key = context.accounts.user.key();
-        msg!("Greetings from {}", context.program_id);
-        msg!(
-            "User {user_public_key}'s favorite number is {number}, favorite color is: {color}",
-        );
-
-        msg!(
-            "User's hobbies are: {:?}",
-            hobbies
-        ); 
-
-        context.accounts.favorites.set_inner(Favorites {
-            number,
-            color,
-            hobbies
-        });
+    pub fn initialize_pair_risk_param(
+        ctx: Context<InitializePairRiskParam>,
+        risk_level: u8,
+    ) -> Result<()> {
+        let param = &mut ctx.accounts.risk_param;
+        param.feed_a = ctx.accounts.feed_a.key();
+        param.feed_b = ctx.accounts.feed_b.key();
+        param.risk_level = risk_level;
         Ok(())
     }
 
-    // We can also add a get_favorites instruction handler to return the user's favorite number and color
+    pub fn update_pair_risk_param(
+        ctx: Context<UpdatePairRiskParam>,
+        new_risk_level: u8,
+    ) -> Result<()> {
+        let param = &mut ctx.accounts.risk_param;
+        param.risk_level = new_risk_level;
+        Ok(())
+    }
+
+    pub fn delete_pair_risk_param(_ctx: Context<DeletePairRiskParam>) -> Result<()> {
+        Ok(())
+    }
 }
 
-// What we will put inside the Favorites PDA
-#[account]
-#[derive(InitSpace)]
-pub struct Favorites {
-    pub number: u64,
-
-    #[max_len(50)]
-    pub color: String,
-
-    #[max_len(5, 50)]
-    pub hobbies: Vec<String>
-}
-// When people call the set_favorites instruction, they will need to provide the accounts that will be modifed. This keeps Solana fast!
 #[derive(Accounts)]
-pub struct SetFavorites<'info> {
-    #[account(mut)]
-    pub user: Signer<'info>,
-
+#[instruction(risk_level: u8)]
+pub struct InitializePairRiskParam<'info> {
     #[account(
-        init_if_needed, 
-        payer = user, 
-        space = ANCHOR_DISCRIMINATOR_SIZE + Favorites::INIT_SPACE, 
-        seeds=[b"favorites", user.key().as_ref()],
-    bump)]
-    pub favorites: Account<'info, Favorites>,
-
+        init,
+        payer = payer,
+        space = 8 + 32 + 32 + 1,
+        seeds = [b"risk_pair", feed_a.key().as_ref(), feed_b.key().as_ref()],
+        bump
+    )]
+    pub risk_param: Account<'info, RiskParam>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: feed identifiers only
+    pub feed_a: UncheckedAccount<'info>,
+    /// CHECK: feed identifiers only
+    pub feed_b: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdatePairRiskParam<'info> {
+    #[account(
+        mut,
+        seeds = [b"risk_pair", feed_a.key().as_ref(), feed_b.key().as_ref()],
+        bump
+    )]
+    pub risk_param: Account<'info, RiskParam>,
+    /// CHECK: feed identifiers only
+    pub feed_a: UncheckedAccount<'info>,
+    /// CHECK: feed identifiers only
+    pub feed_b: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct DeletePairRiskParam<'info> {
+    #[account(
+        mut,
+        close = payer,
+        seeds = [b"risk_pair", feed_a.key().as_ref(), feed_b.key().as_ref()],
+        bump
+    )]
+    pub risk_param: Account<'info, RiskParam>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: feed identifiers only
+    pub feed_a: UncheckedAccount<'info>,
+    /// CHECK: feed identifiers only
+    pub feed_b: UncheckedAccount<'info>,
+}
+
+#[account]
+pub struct RiskParam {
+    pub feed_a: Pubkey,
+    pub feed_b: Pubkey,
+    pub risk_level: u8,
 }

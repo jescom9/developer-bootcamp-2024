@@ -3,6 +3,7 @@ use anchor_lang::prelude::*;
 
 #[derive(Accounts)]
 pub struct UpdateConfig<'info> {
+    
     #[account(
         mut,
         seeds = [SEED_CONFIG_ACCOUNT],

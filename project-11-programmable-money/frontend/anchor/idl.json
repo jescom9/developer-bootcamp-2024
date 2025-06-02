@@ -1,5 +1,5 @@
 {
-  "address": "6DjiD8tQhJ9ZS3WZrwNubfoBRBrqfWacNR3bXBQ7ir91",
+  "address": "GupC8R4ajvyxs5JTtEuEsKWNQHddzWAudbh3VDsbJTAZ",
   "metadata": {
     "name": "stablecoin",
     "version": "0.1.0",
@@ -9,7 +9,16 @@
   "instructions": [
     {
       "name": "deposit_collateral_and_mint",
-      "discriminator": [186, 99, 85, 148, 89, 72, 66, 57],
+      "discriminator": [
+        186,
+        99,
+        85,
+        148,
+        89,
+        72,
+        66,
+        57
+      ],
       "accounts": [
         {
           "name": "depositor",
@@ -22,7 +31,14 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [99, 111, 110, 102, 105, 103]
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
@@ -34,7 +50,18 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [99, 111, 108, 108, 97, 116, 101, 114, 97, 108]
+                "value": [
+                  99,
+                  111,
+                  108,
+                  108,
+                  97,
+                  116,
+                  101,
+                  114,
+                  97,
+                  108
+                ]
               },
               {
                 "kind": "account",
@@ -50,7 +77,11 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [115, 111, 108]
+                "value": [
+                  115,
+                  111,
+                  108
+                ]
               },
               {
                 "kind": "account",
@@ -62,7 +93,9 @@
         {
           "name": "mint_account",
           "writable": true,
-          "relations": ["config_account"]
+          "relations": [
+            "config_account"
+          ]
         },
         {
           "name": "price_update"
@@ -88,9 +121,38 @@
             "program": {
               "kind": "const",
               "value": [
-                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142,
-                13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216,
-                219, 233, 248, 89
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
               ]
             }
           }
@@ -121,7 +183,16 @@
     },
     {
       "name": "initialize_config",
-      "discriminator": [208, 127, 21, 1, 194, 190, 196, 70],
+      "discriminator": [
+        208,
+        127,
+        21,
+        1,
+        194,
+        190,
+        196,
+        70
+      ],
       "accounts": [
         {
           "name": "authority",
@@ -135,7 +206,14 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [99, 111, 110, 102, 105, 103]
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
@@ -147,7 +225,12 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [109, 105, 110, 116]
+                "value": [
+                  109,
+                  105,
+                  110,
+                  116
+                ]
               }
             ]
           }
@@ -165,7 +248,16 @@
     },
     {
       "name": "liquidate",
-      "discriminator": [223, 179, 226, 125, 48, 46, 39, 74],
+      "discriminator": [
+        223,
+        179,
+        226,
+        125,
+        48,
+        46,
+        39,
+        74
+      ],
       "accounts": [
         {
           "name": "liquidator",
@@ -181,7 +273,14 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [99, 111, 110, 102, 105, 103]
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
@@ -193,12 +292,16 @@
         {
           "name": "sol_account",
           "writable": true,
-          "relations": ["collateral_account"]
+          "relations": [
+            "collateral_account"
+          ]
         },
         {
           "name": "mint_account",
           "writable": true,
-          "relations": ["config_account"]
+          "relations": [
+            "config_account"
+          ]
         },
         {
           "name": "token_account",
@@ -221,9 +324,38 @@
             "program": {
               "kind": "const",
               "value": [
-                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142,
-                13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216,
-                219, 233, 248, 89
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
               ]
             }
           }
@@ -246,7 +378,16 @@
     },
     {
       "name": "redeem_collateral_and_burn_tokens",
-      "discriminator": [133, 209, 165, 17, 145, 53, 164, 84],
+      "discriminator": [
+        133,
+        209,
+        165,
+        17,
+        145,
+        53,
+        164,
+        84
+      ],
       "accounts": [
         {
           "name": "depositor",
@@ -262,7 +403,14 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [99, 111, 110, 102, 105, 103]
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
@@ -274,7 +422,18 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [99, 111, 108, 108, 97, 116, 101, 114, 97, 108]
+                "value": [
+                  99,
+                  111,
+                  108,
+                  108,
+                  97,
+                  116,
+                  101,
+                  114,
+                  97,
+                  108
+                ]
               },
               {
                 "kind": "account",
@@ -286,17 +445,23 @@
         {
           "name": "sol_account",
           "writable": true,
-          "relations": ["collateral_account"]
+          "relations": [
+            "collateral_account"
+          ]
         },
         {
           "name": "mint_account",
           "writable": true,
-          "relations": ["config_account"]
+          "relations": [
+            "config_account"
+          ]
         },
         {
           "name": "token_account",
           "writable": true,
-          "relations": ["collateral_account"]
+          "relations": [
+            "collateral_account"
+          ]
         },
         {
           "name": "token_program",
@@ -320,7 +485,16 @@
     },
     {
       "name": "update_config",
-      "discriminator": [29, 158, 252, 191, 10, 83, 219, 99],
+      "discriminator": [
+        29,
+        158,
+        252,
+        191,
+        10,
+        83,
+        219,
+        99
+      ],
       "accounts": [
         {
           "name": "config_account",
@@ -329,7 +503,14 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [99, 111, 110, 102, 105, 103]
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
               }
             ]
           }
@@ -346,15 +527,42 @@
   "accounts": [
     {
       "name": "Collateral",
-      "discriminator": [123, 130, 234, 63, 255, 240, 255, 92]
+      "discriminator": [
+        123,
+        130,
+        234,
+        63,
+        255,
+        240,
+        255,
+        92
+      ]
     },
     {
       "name": "Config",
-      "discriminator": [155, 12, 170, 224, 30, 250, 204, 130]
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
     },
     {
       "name": "PriceUpdateV2",
-      "discriminator": [34, 241, 35, 99, 157, 126, 244, 205]
+      "discriminator": [
+        34,
+        241,
+        35,
+        99,
+        157,
+        126,
+        244,
+        205
+      ]
     }
   ],
   "errors": [
@@ -461,8 +669,14 @@
         "fields": [
           {
             "name": "feed_id",
+            "docs": [
+              "`FeedId` but avoid the type alias because of compatibility issues with Anchor's `idl-build` feature."
+            ],
             "type": {
-              "array": ["u8", 32]
+              "array": [
+                "u8",
+                32
+              ]
             }
           },
           {
@@ -479,7 +693,9 @@
           },
           {
             "name": "publish_time",
-            "docs": ["The timestamp of this price update in seconds"],
+            "docs": [
+              "The timestamp of this price update in seconds"
+            ],
             "type": "i64"
           },
           {

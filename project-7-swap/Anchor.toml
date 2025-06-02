@@ -11,7 +11,7 @@ swap = "DAehvmx2vZoWCJi7Qo3Y4YF5vrEWHQRJ288kqKwDy5DV"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

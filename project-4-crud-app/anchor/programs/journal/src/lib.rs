@@ -7,7 +7,6 @@ declare_id!("94L2mJxVu6ZMmHaGsCHRQ65Kk2mea6aTnwWjSdfSsmBC");
 #[program]
 mod journal {
     use super::*;
-
     pub fn create_journal_entry(
         ctx: Context<CreateEntry>,
         title: String,

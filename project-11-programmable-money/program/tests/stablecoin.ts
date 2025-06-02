@@ -11,9 +11,7 @@ describe("stablecoin", () => {
 
   const program = anchor.workspace.Stablecoin as Program<Stablecoin>;
 
-  const pythSolanaReceiver = new PythSolanaReceiver({ connection, wallet });
-  const SOL_PRICE_FEED_ID =
-    "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d";
+   
   const solUsdPriceFeedAccount = pythSolanaReceiver
     .getPriceFeedAccountAddress(0, SOL_PRICE_FEED_ID)
     .toBase58();
@@ -43,7 +41,16 @@ describe("stablecoin", () => {
       )
       .accounts({ priceUpdate: solUsdPriceFeedAccount })
       .rpc({ skipPreflight: true, commitment: "confirmed" });
+
     console.log("Your transaction signature", tx);
+
+    // Capture the transaction details to see the msg!() logs.
+    const txDetails = await connection.getTransaction(tx, {
+      maxSupportedTransactionVersion: 0,
+      commitment: "confirmed",
+    });
+    const logs = txDetails?.meta?.logMessages || [];
+    console.log("Program Logs:", logs);
   });
 
   it("Redeem Collateral and Burn USDS", async () => {
@@ -57,6 +64,13 @@ describe("stablecoin", () => {
       .accounts({ priceUpdate: solUsdPriceFeedAccount })
       .rpc({ skipPreflight: true, commitment: "confirmed" });
     console.log("Your transaction signature", tx);
+    // Capture the transaction details to see the msg!() logs.
+    const txDetails = await connection.getTransaction(tx, {
+      maxSupportedTransactionVersion: 0,
+      commitment: "confirmed",
+    });
+    const logs = txDetails?.meta?.logMessages || [];
+    console.log("Program Logs:", logs);
   });
 
   // Increase minimum health threshold to test liquidate
@@ -66,6 +80,13 @@ describe("stablecoin", () => {
       .accounts({})
       .rpc({ skipPreflight: true, commitment: "confirmed" });
     console.log("Your transaction signature", tx);
+    // Capture the transaction details to see the msg!() logs.
+    const txDetails = await connection.getTransaction(tx, {
+      maxSupportedTransactionVersion: 0,
+      commitment: "confirmed",
+    });
+    const logs = txDetails?.meta?.logMessages || [];
+    console.log("Program Logs:", logs);
   });
 
   it("Liquidate", async () => {

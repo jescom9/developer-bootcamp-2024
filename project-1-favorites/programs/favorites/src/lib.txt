@@ -1,0 +1,273 @@
+use anchor_lang::prelude::*;
+// Our program's address!
+// This matches the key in the target/deploy directory
+declare_id!("8tqMBrKPc1p3XTo27d3ytxPyUyZ31mF3LpfG26WvYahf");
+
+pub const ANCHOR_DISCRIMINATOR_SIZE: usize = 8;
+const MAX_DEPOSITS: usize = 11;
+const MAX_BORROWS: usize = 10;
+
+#[program]
+pub mod favorites {
+    use super::*;
+
+    pub fn initialize_obligation(ctx: Context<InitializeObligation>) -> Result<()> {
+        let obligation = &mut ctx.accounts.obligation_account;
+        obligation.owner = ctx.accounts.user.key();
+        obligation.deposits = Vec::new();
+        obligation.borrows = Vec::new();
+        msg!(
+            "Obligation account {} initialized for owner {}",
+            obligation.key(),
+            obligation.owner
+        );
+        Ok(())
+    }
+
+    pub fn add_deposit(
+        ctx: Context<ManagePosition>,
+        asset_pubkey: Pubkey,
+        amount: u64,
+        price: u64,
+    ) -> Result<()> {
+        let obligation = &mut ctx.accounts.obligation_account;
+        obligation.add_deposit(asset_pubkey, amount, price)?;
+        msg!(
+            "Added deposit of {} for asset {} with price {}",
+            amount,
+            asset_pubkey,
+            price
+        );
+        Ok(())
+    }
+
+    pub fn remove_deposit(
+        ctx: Context<ManagePosition>,
+        asset_pubkey: Pubkey,
+        amount_to_remove: u64,
+    ) -> Result<()> {
+        let obligation = &mut ctx.accounts.obligation_account;
+        obligation.remove_deposit(asset_pubkey, amount_to_remove)?;
+        msg!(
+            "Removed {} from deposit for asset {}",
+            amount_to_remove,
+            asset_pubkey
+        );
+        Ok(())
+    }
+
+    pub fn add_borrow(
+        ctx: Context<ManagePosition>,
+        asset_pubkey: Pubkey,
+        amount: u64,
+        price: u64,
+    ) -> Result<()> {
+        let obligation = &mut ctx.accounts.obligation_account;
+        obligation.add_borrow(asset_pubkey, amount, price)?;
+        msg!(
+            "Added borrow of {} for asset {} with price {}",
+            amount,
+            asset_pubkey,
+            price
+        );
+        Ok(())
+    }
+
+    pub fn remove_borrow(
+        ctx: Context<ManagePosition>,
+        asset_pubkey: Pubkey,
+        amount_to_remove: u64,
+    ) -> Result<()> {
+        let obligation = &mut ctx.accounts.obligation_account;
+        obligation.remove_borrow(asset_pubkey, amount_to_remove)?;
+        msg!(
+            "Removed {} from borrow for asset {}",
+            amount_to_remove,
+            asset_pubkey
+        );
+        Ok(())
+    }
+}
+ 
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace)]
+pub struct ObligationPosition {
+    pub asset: Pubkey,
+    pub amount: u64,
+    pub price: u64,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct Obligation {
+    pub owner: Pubkey,
+    #[max_len(MAX_DEPOSITS, ObligationPosition::INIT_SPACE)]
+    pub deposits: Vec<ObligationPosition>,
+    #[max_len(MAX_BORROWS, ObligationPosition::INIT_SPACE)]
+    pub borrows: Vec<ObligationPosition>,
+}
+
+impl Obligation {
+    fn find_deposit_index(&self, asset_pubkey: &Pubkey) -> Option<usize> {
+        self.deposits.iter().position(|p| p.asset == *asset_pubkey)
+    }
+
+    fn find_borrows_index(&self, asset_pubkey: &Pubkey) -> Option<usize> {
+        self.borrows.iter().position(|p| p.asset == *asset_pubkey)
+    }
+
+    pub fn add_deposit(
+        &mut self,
+        asset_pubkey: Pubkey,
+        amount_to_add: u64,
+        price: u64,
+    ) -> Result<()> {
+        if amount_to_add == 0 {
+            return Ok(());
+        }
+
+        if let Some(index) = self.find_deposit_index(&asset_pubkey) {
+            let position = &mut self.deposits[index];
+            position.amount = position
+                .amount
+                .checked_add(amount_to_add)
+                .ok_or(ErrorCode::MathOverflow)?;
+            // Note: Price and risks of existing position are not updated here, only amount.
+            // If price/risks need to be updatable, a separate instruction or logic modification is needed.
+        } else {
+            if self.deposits.len() >= MAX_DEPOSITS {
+                return Err(ErrorCode::MaxDepositsReached.into());
+            }
+            self.deposits.push(ObligationPosition {
+                asset: asset_pubkey,
+                amount: amount_to_add,
+                price,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn remove_deposit(&mut self, asset_pubkey: Pubkey, amount_to_remove: u64) -> Result<()> {
+        if amount_to_remove == 0 {
+            return Ok(());
+        }
+        if let Some(index) = self.find_deposit_index(&asset_pubkey) {
+            let position = &mut self.deposits[index];
+            if position.amount < amount_to_remove {
+                return Err(ErrorCode::InsufficientDeposit.into());
+            }
+            position.amount = position.amount.checked_sub(amount_to_remove).unwrap();
+            if position.amount == 0 {
+                self.deposits.remove(index);
+            }
+            Ok(())
+        } else {
+            Err(ErrorCode::DepositNotFound.into())
+        }
+    }
+
+    pub fn add_borrow(
+        &mut self,
+        asset_pubkey: Pubkey,
+        amount_to_add: u64,
+        price: u64,
+    ) -> Result<()> {
+        if amount_to_add == 0 {
+            return Ok(());
+        }
+
+        if let Some(index) = self.find_borrows_index(&asset_pubkey) {
+            let position = &mut self.borrows[index];
+            position.amount = position
+                .amount
+                .checked_add(amount_to_add)
+                .ok_or(ErrorCode::MathOverflow)?;
+        } else {
+            if self.borrows.len() >= MAX_BORROWS {
+                return Err(ErrorCode::MaxBorrowsReached.into());
+            }
+            self.borrows.push(ObligationPosition {
+                asset: asset_pubkey,
+                amount: amount_to_add,
+                price,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn remove_borrow(&mut self, asset_pubkey: Pubkey, amount_to_remove: u64) -> Result<()> {
+        if amount_to_remove == 0 {
+            return Ok(());
+        }
+        if let Some(index) = self.find_borrows_index(&asset_pubkey) {
+            let position = &mut self.borrows[index];
+            if position.amount < amount_to_remove {
+                return Err(ErrorCode::InsufficientBorrow.into());
+            }
+            position.amount = position.amount.checked_sub(amount_to_remove).unwrap();
+            if position.amount == 0 {
+                self.borrows.remove(index);
+            }
+            Ok(())
+        } else {
+            Err(ErrorCode::BorrowNotFound.into())
+        }
+    }
+}
+
+#[derive(Accounts)]
+pub struct InitializeObligation<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(
+        init,
+        payer = user,
+        space = ANCHOR_DISCRIMINATOR_SIZE + Obligation::INIT_SPACE,
+        seeds = [b"obligation", user.key().as_ref()],
+        bump
+    )]
+    pub obligation_account: Account<'info, Obligation>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ManagePosition<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"obligation", owner.key().as_ref()],
+        bump,
+        has_one = owner
+    )]
+    pub obligation_account: Account<'info, Obligation>,
+}
+
+#[derive(Accounts)]
+pub struct ViewObligation<'info> {
+    #[account(
+        seeds = [b"obligation", owner.key().as_ref()],
+        bump,
+        has_one = owner
+    )]
+    pub obligation_account: Account<'info, Obligation>,
+    /// CHECK: Owner of the obligation account, used for seed verification.
+    pub owner: AccountInfo<'info>,
+}
+
+#[error_code]
+pub enum ErrorCode {
+    #[msg("Mathematical overflow")]
+    MathOverflow,
+    #[msg("Insufficient deposit to perform this operation")]
+    InsufficientDeposit,
+    #[msg("Deposit not found for the given asset")]
+    DepositNotFound,
+    #[msg("Insufficient borrow to perform this operation")]
+    InsufficientBorrow,
+    #[msg("Borrow not found for the given asset")]
+    BorrowNotFound,
+    #[msg("Maximum number of deposits reached")]
+    MaxDepositsReached,
+    #[msg("Maximum number of borrows reached")]
+    MaxBorrowsReached,
+}

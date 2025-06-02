@@ -1,0 +1,287 @@
+
+  let obligationPda: PublicKey;
+  let obligationBump: number;
+
+  // Dummy asset public keys for testing
+  const asset1Pk = Keypair.generate().publicKey;
+  const asset2Pk = Keypair.generate().publicKey;
+  const asset3Pk = Keypair.generate().publicKey;
+
+  before(async () => {
+    // Derive PDA for the obligation account
+    [obligationPda, obligationBump] = PublicKey.findProgramAddressSync(
+      [Buffer.from("obligation"), user.publicKey.toBuffer()],
+      program.programId
+    );
+
+    const balance = await provider.connection.getBalance(user.publicKey);
+    console.log(`User balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
+    console.log(`Obligation PDA: ${obligationPda.toBase58()}`);
+  });
+
+  it("Initializes an obligation account", async () => {
+    try {
+      await program.methods
+        .initializeObligation()
+        .accounts({
+          user: user.publicKey,
+          obligationAccount: obligationPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([user])
+        .rpc();
+
+      const accountData = await program.account.obligation.fetch(obligationPda);
+      assert.ok(accountData.owner.equals(user.publicKey));
+      assert.isEmpty(accountData.deposits);
+      assert.isEmpty(accountData.borrows);
+    } catch (e) {
+      console.error("Initialization failed:", e);
+      throw e;
+    }
+  });
+
+  it("Adds a new deposit", async () => {
+    const amount = new BN(100);
+    const price = new BN(10);
+    // const risks = [
+    //   { asset1: asset2Pk, asset2: asset3Pk, riskLevel: 5 },
+    // ];
+
+    await program.methods
+      .addDeposit(asset1Pk, amount, price)
+      .accounts({
+        owner: user.publicKey,
+        obligationAccount: obligationPda,
+      })
+      .signers([user])
+      .rpc();
+
+    const accountData = await program.account.obligation.fetch(obligationPda);
+    assert.equal(accountData.deposits.length, 1);
+    const deposit = accountData.deposits[0];
+    assert.ok(deposit.asset.equals(asset1Pk));
+    assert.ok(deposit.amount.eq(amount));
+    assert.ok(deposit.price.eq(price)); 
+  });
+
+  it("Adds to an existing deposit", async () => {
+    const additionalAmount = new BN(50);
+    const originalAmount = new BN(100);
+    const expectedTotalAmount = originalAmount.add(additionalAmount);
+    const price = new BN(10); // Price and risks are not updated for existing, per current contract logic
+    const risks = []; // Risks are set on first add
+
+    await program.methods
+      .addDeposit(asset1Pk, additionalAmount, price, risks)
+      .accounts({
+        owner: user.publicKey,
+        obligationAccount: obligationPda,
+      })
+      .signers([user])
+      .rpc();
+
+    const accountData = await program.account.obligation.fetch(obligationPda);
+    assert.equal(accountData.deposits.length, 1);
+    const deposit = accountData.deposits[0];
+    assert.ok(deposit.asset.equals(asset1Pk));
+    assert.ok(deposit.amount.eq(expectedTotalAmount));
+    assert.ok(deposit.price.eq(price)); // Should be the original price
+  });
+
+  it("Adds a second, different deposit", async () => {
+    const amount = new BN(200);
+    const price = new BN(25);
+    const risks = [{ asset1: asset1Pk, asset2: asset3Pk, riskLevel: 3 }];
+
+    await program.methods
+      .addDeposit(asset2Pk, amount, price, risks)
+      .accounts({
+        owner: user.publicKey,
+        obligationAccount: obligationPda,
+      })
+      .signers([user])
+      .rpc();
+    
+    const accountData = await program.account.obligation.fetch(obligationPda);
+    assert.equal(accountData.deposits.length, 2);
+    const newDeposit = accountData.deposits.find(d => d.asset.equals(asset2Pk));
+    assert.isDefined(newDeposit);
+    assert.ok(newDeposit.amount.eq(amount));
+    assert.ok(newDeposit.price.eq(price));
+  });
+
+  it("Removes a partial deposit", async () => {
+    const amountToRemove = new BN(30);
+    // asset1Pk current amount is 150 (100 + 50)
+    const expectedRemainingAmount = new BN(150).sub(amountToRemove);
+
+
+    await program.methods
+      .removeDeposit(asset1Pk, amountToRemove)
+      .accounts({
+        owner: user.publicKey,
+        obligationAccount: obligationPda,
+      })
+      .signers([user])
+      .rpc();
+
+    const accountData = await program.account.obligation.fetch(obligationPda);
+    const deposit = accountData.deposits.find(d => d.asset.equals(asset1Pk));
+    assert.isDefined(deposit);
+    assert.ok(deposit.amount.eq(expectedRemainingAmount));
+  });
+
+  it("Removes a full deposit, making it disappear", async () => {
+    // asset1Pk current amount is 120
+    const amountToRemove = new BN(120);
+
+    await program.methods
+      .removeDeposit(asset1Pk, amountToRemove)
+      .accounts({
+        owner: user.publicKey,
+        obligationAccount: obligationPda,
+      })
+      .signers([user])
+      .rpc();
+
+    const accountData = await program.account.obligation.fetch(obligationPda);
+    const deposit = accountData.deposits.find(d => d.asset.equals(asset1Pk));
+    assert.isUndefined(deposit, "Deposit for asset1Pk should have been removed");
+    assert.equal(accountData.deposits.length, 1); // Only asset2Pk deposit should remain
+  });
+
+  it("Fails to remove more than deposited", async () => {
+    // asset2Pk has 200
+    const amountToRemove = new BN(250);
+    try {
+      await program.methods
+        .removeDeposit(asset2Pk, amountToRemove)
+        .accounts({
+          owner: user.publicKey,
+          obligationAccount: obligationPda,
+        })
+        .signers([user])
+        .rpc();
+      assert.fail("Should have failed with InsufficientDeposit");
+    } catch (error) {
+      // Check for AnchorError and specific error code if possible
+      // For now, just check if it's an error
+      assert.isNotNull(error);
+      // Example: assert.include(error.toString(), "InsufficientDeposit"); or error.error.errorCode.code === "InsufficientDeposit"
+    }
+  });
+
+
+  it("Adds a new borrow", async () => {
+    const amount = new BN(500);
+    const price = new BN(5);
+    const risks = [{ asset1: asset1Pk, asset2: asset2Pk, riskLevel: 8 }];
+
+    await program.methods
+      .addBorrow(asset3Pk, amount, price, risks)
+      .accounts({
+        owner: user.publicKey,
+        obligationAccount: obligationPda,
+      })
+      .signers([user])
+      .rpc();
+
+    const accountData = await program.account.obligation.fetch(obligationPda);
+    assert.equal(accountData.borrows.length, 1);
+    const borrow = accountData.borrows[0];
+    assert.ok(borrow.asset.equals(asset3Pk));
+    assert.ok(borrow.amount.eq(amount));
+    assert.ok(borrow.price.eq(price));
+    assert.equal(borrow.risks.length, 1);
+  });
+
+  it("Adds to an existing borrow", async () => {
+    const additionalAmount = new BN(20);
+    const originalAmount = new BN(500);
+    const expectedTotalAmount = originalAmount.add(additionalAmount);
+     const price = new BN(5); 
+    const risks = [];
+
+    await program.methods
+      .addBorrow(asset3Pk, additionalAmount, price, risks)
+      .accounts({
+        owner: user.publicKey,
+        obligationAccount: obligationPda,
+      })
+      .signers([user])
+      .rpc();
+
+    const accountData = await program.account.obligation.fetch(obligationPda);
+    const borrow = accountData.borrows.find(b => b.asset.equals(asset3Pk));
+    assert.isDefined(borrow);
+    assert.ok(borrow.amount.eq(expectedTotalAmount));
+  });
+
+  it("Removes a partial borrow", async () => {
+    const amountToRemove = new BN(100);
+    // asset3Pk current borrow is 520
+    const expectedRemainingAmount = new BN(520).sub(amountToRemove);
+
+    await program.methods
+      .removeBorrow(asset3Pk, amountToRemove)
+      .accounts({
+        owner: user.publicKey,
+        obligationAccount: obligationPda,
+      })
+      .signers([user])
+      .rpc();
+    
+    const accountData = await program.account.obligation.fetch(obligationPda);
+    const borrow = accountData.borrows.find(b => b.asset.equals(asset3Pk));
+    assert.isDefined(borrow);
+    assert.ok(borrow.amount.eq(expectedRemainingAmount));
+  });
+
+  it("Removes a full borrow, making it disappear", async () => {
+    // asset3Pk current borrow is 420
+    const amountToRemove = new BN(420);
+    await program.methods
+      .removeBorrow(asset3Pk, amountToRemove)
+      .accounts({
+        owner: user.publicKey,
+        obligationAccount: obligationPda,
+      })
+      .signers([user])
+      .rpc();
+
+    const accountData = await program.account.obligation.fetch(obligationPda);
+    const borrow = accountData.borrows.find(b => b.asset.equals(asset3Pk));
+    assert.isUndefined(borrow, "Borrow for asset3Pk should have been removed");
+    assert.isEmpty(accountData.borrows);
+  });
+
+  it("Gets obligation data using the read-only method", async () => {
+    // First, add a known deposit to check
+    const assetPk = Keypair.generate().publicKey;
+    const amount = new BN(777);
+    const price = new BN(7);
+    const risks = [];
+    await program.methods
+      .addDeposit(assetPk, amount, price, risks)
+      .accounts({
+        owner: user.publicKey,
+        obligationAccount: obligationPda,
+      })
+      .signers([user])
+      .rpc();
+
+    // Now call the get_obligation method
+    const fetchedObligation = await program.methods
+        .getObligation()
+        .accounts({
+            obligationAccount: obligationPda,
+            owner: user.publicKey, // Provide the owner for seed verification in ViewObligation
+        })
+        .view(); // Using .view() for read-only calls if supported, or .rpc() then fetch
+
+    assert.ok(fetchedObligation.owner.equals(user.publicKey));
+    const deposit = fetchedObligation.deposits.find(d => d.asset.equals(assetPk));
+    assert.isDefined(deposit);
+    assert.ok(deposit.amount.eq(amount));
+  });

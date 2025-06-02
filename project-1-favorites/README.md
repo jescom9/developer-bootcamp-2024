@@ -1,30 +1,22 @@
-# Project 1: Favorites Application
+# 📊 Favorites — Risk Parameters for Asset Pairs
 
-This is a basic Anchor app using PDAs to store data for a user, and Anchor's account checks to ensure each user is only allowed to modify their own data.
+This Solana Anchor program allows you to store, update, delete, and read **risk parameters** for pairs of asset feeds (e.g., Chainlink oracles). Each risk parameter is saved using a **Program Derived Address (PDA)** based on the combination of two feed public keys. The order of feeds is **irrelevant** — `(A, B)` is treated the same as `(B, A)`.
 
-It's used by the [https://github.com/solana-developers/professional-education](Solana Professional Education) course.
+---
 
-We recommend creating a separate github repository for each project and commiting your code as you follow along the video.
+## 🧠 Features
 
-[![Favorites Program](https://ik.imagekit.io/mkpjlhtny/solpg_button_zWM8WlPKs.svg?ik-sdk-version=javascript-1.4.3&updatedAt=1662621556513)](https://beta.solpg.io/67060f00cffcf4b13384d3dc)
+- ✅ Store risk level (`u8`) per asset pair (e.g., BTC-ETH, USDC-USDT)
+- ✅ Use deterministic, order-insensitive PDA
+- ✅ Initialize, update, and delete risk parameters
+- ✅ No user-specific state or permissions
 
-## Resources
+---
 
-- [Anchor Documentation](https://www.anchor-lang.com/)
-- [Solana Documentation](https://solana.com/docs)
-- [Solana Playground](https://beta.solpg.io)
-- [Rust Documentation](https://doc.rust-lang.org/book/)
+## 📁 Program Structure
 
-## Running This Project
-
-We highly recommend [creating your own github repository](https://github.com/new) and building along with the video. This will help you learn the most and give you a reference to look back on later.
-
-If you want to check the final result of the project, you can clone this repository and run the following commands:
-
-```
-npm i
-anchor build
-anchor test
-```
-
-You should see the tests pass once completed.
+### PDA Seeds
+ 
+["risk_pair", sorted_feed_a, sorted_feed_b]
+ RUSTUP_TOOLCHAIN=nightly-2025-04-01 anchor build /deploy /test --skip-local-validator
+ 

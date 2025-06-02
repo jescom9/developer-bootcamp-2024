@@ -1,17 +1,17 @@
 [toolchain]
 
 [features]
-seeds = false
+resolution = true
 skip-lint = false
 
 [programs.localnet]
-voting = "5s3PtT8kLYCv1WEp6dSh3T7EuF35Z6jSu5Cvx4hWG79H"
+voting = "8JdaV19mbyNQMs9JX6HqJKmYw5nNsqHah3emrYTQpWvF"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

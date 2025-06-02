@@ -1,6 +1,6 @@
 "use client";
 
-import { getVestingProgram, getVestingProgramId } from "@token-vesting/anchor";
+import { getVestingProgram, getVestingProgramId } from "@npmtoken-vesting/anchor";
 import { useConnection } from "@solana/wallet-adapter-react";
 import { Cluster, PublicKey } from "@solana/web3.js";
 import { useMutation, useQuery } from "@tanstack/react-query";

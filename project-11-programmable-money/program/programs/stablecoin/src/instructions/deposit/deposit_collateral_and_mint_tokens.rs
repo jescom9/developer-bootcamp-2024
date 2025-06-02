@@ -50,7 +50,6 @@ pub struct DepositCollateralAndMintTokens<'info> {
     pub system_program: Program<'info, System>,
 }
 
-// https://github.com/Cyfrin/foundry-defi-stablecoin-cu/blob/main/src/DSCEngine.sol#L140
 pub fn process_deposit_collateral_and_mint_tokens(
     ctx: Context<DepositCollateralAndMintTokens>,
     amount_collateral: u64,
