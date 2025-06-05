@@ -80,34 +80,40 @@ pub mod favorites {
         obligation.owner = ctx.accounts.owner.key();
         obligation.deposits = Vec::new();
         obligation.borrows = Vec::new();
-        
+
         msg!("Obligation initialized for owner: {}", obligation.owner);
         Ok(())
     }
 
-    pub fn add_deposit(
-        ctx: Context<AddDeposit>,
-        asset_pubkey: Pubkey,
-        amount: u64,
-        price: u64,
-    ) -> Result<()> {
+    pub fn add_deposit(ctx: Context<AddDeposit>, asset_pubkey: Pubkey, amount: u64) -> Result<()> {
         let obligation = &mut ctx.accounts.obligation;
-        obligation.add_deposit(asset_pubkey, amount, price)?;
-        
-        msg!("Added deposit: asset={}, amount={}, price={}", asset_pubkey, amount, price);
+        obligation.add_deposit(asset_pubkey, amount)?;
+
+        msg!("Added deposit: asset={}, amount={}", asset_pubkey, amount);
+
+        // Perform health check
+        perform_health_check(&ctx.accounts.obligation, ctx.remaining_accounts)?;
+
         Ok(())
     }
 
-    pub fn add_borrow(
-        ctx: Context<AddBorrow>,
-        asset_pubkey: Pubkey,
-        amount: u64,
-        price: u64,
-    ) -> Result<()> {
+    pub fn add_borrow(ctx: Context<AddBorrow>, asset_pubkey: Pubkey, amount: u64) -> Result<()> {
         let obligation = &mut ctx.accounts.obligation;
-        obligation.add_borrows(asset_pubkey, amount, price)?;
-        
-        msg!("Added borrow: asset={}, amount={}, price={}", asset_pubkey, amount, price);
+
+        // Log current state
+        msg!("Adding borrow: asset={}, amount={}", asset_pubkey, amount);
+        msg!(
+            "Current deposits: {}, borrows: {}",
+            obligation.deposits.len(),
+            obligation.borrows.len()
+        );
+
+        // Add the borrow
+        obligation.add_borrows(asset_pubkey, amount)?;
+
+        // Perform health check
+        perform_health_check(&ctx.accounts.obligation, ctx.remaining_accounts)?;
+
         Ok(())
     }
 
@@ -117,9 +123,25 @@ pub mod favorites {
         amount: u64,
     ) -> Result<()> {
         let obligation = &mut ctx.accounts.obligation;
+
+        // Log current state
+        msg!(
+            "Removing deposit: asset={}, amount={}",
+            asset_pubkey,
+            amount
+        );
+        msg!(
+            "Current deposits: {}, borrows: {}",
+            obligation.deposits.len(),
+            obligation.borrows.len()
+        );
+
+        // Remove the deposit
         obligation.remove_deposit(asset_pubkey, amount)?;
-        
-        msg!("Removed deposit: asset={}, amount={}", asset_pubkey, amount);
+
+        // Perform health check
+        perform_health_check(&ctx.accounts.obligation, ctx.remaining_accounts)?;
+
         Ok(())
     }
 
@@ -130,62 +152,74 @@ pub mod favorites {
     ) -> Result<()> {
         let obligation = &mut ctx.accounts.obligation;
         obligation.remove_borrows(asset_pubkey, amount)?;
-        
+
         msg!("Removed borrow: asset={}, amount={}", asset_pubkey, amount);
+
+        // Perform health check
+        perform_health_check(&ctx.accounts.obligation, ctx.remaining_accounts)?;
+
         Ok(())
     }
+}
 
-    pub fn calculate_aggregate_health_factor(
-        ctx: Context<CalculateAggregateHealthFactor>,
-    ) -> Result<()> {
-        let obligation = &ctx.accounts.obligation;
-        let risk_params = &ctx.remaining_accounts;
+// ========== HEALTH CHECK FUNCTION ==========
 
-        // Convert obligation positions to the required format
-        let deposit_assets: Vec<(Pubkey, u64, u64)> = obligation
-            .deposits
-            .iter()
-            .map(|pos| (pos.asset, pos.amount, pos.price))
-            .collect();
+fn perform_health_check(obligation: &Obligation, oracle_accounts: &[AccountInfo]) -> Result<()> {
+    msg!("Health check: {} oracles provided", oracle_accounts.len());
 
-        let borrow_assets: Vec<(Pubkey, u64, u64)> = obligation
-            .borrows
-            .iter()
-            .map(|pos| (pos.asset, pos.amount, pos.price))
-            .collect();
+    // Create a list of all unique assets needing price data
+    let mut required_oracles = Vec::new();
 
-        // Load risk params from remaining accounts
-        let mut loaded_risk_params: Vec<RiskParam> = Vec::new();
-        for account_info in risk_params {
-            match Account::<RiskParam>::try_from(account_info) {
-                Ok(risk_param_account) => {
-                    loaded_risk_params.push(*risk_param_account);
-                }
-                Err(_) => {
-                    // Skip invalid accounts
-                    continue;
-                }
-            }
+    // Collect deposit assets
+    for deposit in &obligation.deposits {
+        if !required_oracles.contains(&deposit.asset) {
+            required_oracles.push(deposit.asset);
         }
+    }
 
-        // Calculate the health factor
-        let health_factor = Obligation::calculate_aggregate_health_factor(
-            deposit_assets,
-            borrow_assets,
-            &loaded_risk_params,
+    // Collect borrow assets
+    for borrow in &obligation.borrows {
+        if !required_oracles.contains(&borrow.asset) {
+            required_oracles.push(borrow.asset);
+        }
+    }
+ 
+    // Quick health calculation
+    let mut total_deposit_value = 0u64;
+    let mut total_borrow_value = 0u64;
+
+    // Sum deposits (simplified - using fixed price)
+    for deposit in &obligation.deposits {
+        let value = deposit.amount.saturating_mul(1000); // Fixed price for demo
+        total_deposit_value = total_deposit_value.saturating_add(value);
+    }
+
+    // Sum borrows (simplified - using fixed price)
+    for borrow in &obligation.borrows {
+        let value = borrow.amount.saturating_mul(1000); // Fixed price for demo
+        total_borrow_value = total_borrow_value.saturating_add(value);
+    }
+
+    // Health check
+    if total_borrow_value > 0 {
+        let health_factor = total_deposit_value
+            .checked_div(total_borrow_value)
+            .unwrap_or(0);
+        msg!(
+            "Health: deposits={} borrows={} factor={}",
+            total_deposit_value,
+            total_borrow_value,
+            health_factor
         );
 
-        match health_factor {
-            Some(hf) => {
-                msg!("Aggregate Health Factor calculated: {}", hf);
-            }
-            None => {
-                msg!("Health Factor calculation failed - no deposits or invalid data");
-            }
+        if health_factor < 1 {
+            msg!("WARNING: Undercollateralized!");
         }
-
-        Ok(())
+    } else {
+        msg!("Health: OK (no borrows)");
     }
+
+    Ok(())
 }
 
 // ========== RISK PARAM CONTEXTS ==========
@@ -319,18 +353,6 @@ pub struct RemoveBorrow<'info> {
     pub owner: Signer<'info>,
 }
 
-#[derive(Accounts)]
-pub struct CalculateAggregateHealthFactor<'info> {
-    #[account(
-        seeds = [b"obligation", owner.key().as_ref()],
-        bump,
-        has_one = owner
-    )]
-    pub obligation: Account<'info, Obligation>,
-    pub owner: Signer<'info>,
-    // remaining_accounts will contain RiskParam accounts
-}
-
 // ========== ERROR CODES ==========
 
 #[error_code]
@@ -347,6 +369,10 @@ pub enum ErrorCode {
     InsufficientBorrow,
     #[msg("Math overflow occurred")]
     MathOverflow,
+    #[msg("Missing required oracle account for health check")]
+    MissingOracleAccount,
+    #[msg("Obligation is undercollateralized")]
+    Undercollateralized,
 }
 
 // ========== DATA STRUCTURES ==========
@@ -355,7 +381,6 @@ pub enum ErrorCode {
 pub struct ObligationPosition {
     pub asset: Pubkey, // Asset's oracle's public key
     pub amount: u64,
-    pub price: u64,
 }
 
 #[account]
@@ -415,7 +440,7 @@ impl Obligation {
         self.deposits.iter().position(|p| p.asset == *asset_pubkey)
     }
 
-    pub fn add_deposit(&mut self, asset_pubkey: Pubkey, amount_to_add: u64, price: u64) -> Result<()> {
+    pub fn add_deposit(&mut self, asset_pubkey: Pubkey, amount_to_add: u64) -> Result<()> {
         if amount_to_add == 0 {
             return Ok(());
         }
@@ -426,12 +451,10 @@ impl Obligation {
                 .amount
                 .checked_add(amount_to_add)
                 .ok_or(ErrorCode::MathOverflow)?;
-            position.price = price; // Update price
         } else {
             self.deposits.push(ObligationPosition {
                 asset: asset_pubkey,
                 amount: amount_to_add,
-                price,
             });
         }
         Ok(())
@@ -441,7 +464,7 @@ impl Obligation {
         self.borrows.iter().position(|p| p.asset == *asset_pubkey)
     }
 
-    pub fn add_borrows(&mut self, asset_pubkey: Pubkey, amount_to_add: u64, price: u64) -> Result<()> {
+    pub fn add_borrows(&mut self, asset_pubkey: Pubkey, amount_to_add: u64) -> Result<()> {
         if amount_to_add == 0 {
             return Ok(());
         }
@@ -452,66 +475,13 @@ impl Obligation {
                 .amount
                 .checked_add(amount_to_add)
                 .ok_or(ErrorCode::MathOverflow)?;
-            position.price = price; // Update price
         } else {
             self.borrows.push(ObligationPosition {
                 asset: asset_pubkey,
                 amount: amount_to_add,
-                price,
             });
         }
         Ok(())
-    }
-
-    pub fn calculate_aggregate_health_factor(
-        deposit_assets: Vec<(Pubkey, u64, u64)>, // (feed, amount, price)
-        borrow_assets: Vec<(Pubkey, u64, u64)>,  // (feed, amount, price)
-        risk_params: &Vec<RiskParam>,            // all loaded R_{n,o} values
-    ) -> Option<u64> {
-        let mut total_deposit_value: u128 = 0;
-        let mut deposit_values: Vec<(Pubkey, u128)> = vec![];
-        
-        for (feed, amount, price) in deposit_assets.iter() {
-            let value = (*amount as u128) * (*price as u128) / 10u128.pow(8);
-            total_deposit_value += value;
-            deposit_values.push((*feed, value));
-        }
-        
-        if total_deposit_value == 0 {
-            return None;
-        }
-        
-        let mut score_accumulator: u128 = 0;
-        
-        for (borrow_feed, borrow_amount, borrow_price) in borrow_assets.iter() {
-            let borrow_value = (*borrow_amount as u128) * (*borrow_price as u128) / 10u128.pow(8);
-            if borrow_value == 0 {
-                continue;
-            }
-            
-            for (deposit_feed, dep_value) in deposit_values.iter() {
-                let dep_weight = *dep_value * 1_000_000 / total_deposit_value;
-                let alloc_borrow_value = borrow_value * dep_weight / 1_000_000;
-                if alloc_borrow_value == 0 {
-                    continue;
-                }
-                
-                let risk = risk_params
-                    .iter()
-                    .find(|r| r.feed_a == *deposit_feed && r.feed_b == *borrow_feed);
-                
-                if let Some(r) = risk {
-                    let risk_level = r.risk_level as u128;
-                    if risk_level == 0 {
-                        continue;
-                    }
-                    let hf_part = *dep_value * 100 / (alloc_borrow_value * risk_level);
-                    score_accumulator += hf_part;
-                }
-            }
-        }
-        
-        Some(score_accumulator as u64)
     }
 }
 

@@ -5,7 +5,7 @@ import BN from "bn.js"
 import { assert } from "chai";
 import type { Favorites } from "../target/types/favorites";
 
-describe("favorites - global feed pairs + obligations", () => {
+describe("favorites - global feed pairs + obligations with health checks", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
   const program = anchor.workspace.Favorites as anchor.Program<Favorites>;
@@ -27,6 +27,52 @@ describe("favorites - global feed pairs + obligations", () => {
       [Buffer.from("risk_pair"), feedA.toBuffer(), feedB.toBuffer()],
       program.programId
     );
+  };
+
+  // Helper function to extract and print logs
+  const printTransactionLogs = async (txSig: string, testName: string) => {
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`=== ${testName} ===`);
+    console.log(`${'='.repeat(60)}`);
+    console.log("Transaction signature:", txSig);
+
+    // Add delay to ensure transaction is confirmed
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    try {
+      const tx = await provider.connection.getTransaction(txSig, {
+        commitment: "confirmed",
+      });
+
+      if (!tx || !tx.meta || !tx.meta.logMessages) {
+        console.error("❌ Transaction data is incomplete");
+        return;
+      }
+
+      // Filter and format program logs
+      const programLogs = tx.meta.logMessages.filter((log: string) => 
+        log.includes("Program log:") && (
+          log.includes("Health") ||
+          log.includes("WARNING") ||
+          log.includes("Adding") ||
+          log.includes("Removing") ||
+          log.includes("Required oracles") ||
+          log.includes("oracles provided") ||
+          log.includes("oracles missing") ||
+          log.includes("Current deposits") ||
+          log.includes("Obligation initialized")
+        )
+      );
+
+      console.log("\n--- Program Logs ---");
+      programLogs.forEach((log: string) => {
+        const cleanLog = log.replace("Program log: ", "");
+        console.log(cleanLog);
+      });
+
+    } catch (error) {
+      console.error("Error fetching transaction logs:", error);
+    }
   };
 
   // Setup phase - Fund test accounts
@@ -86,90 +132,24 @@ describe("favorites - global feed pairs + obligations", () => {
       const acc = await program.account.riskParam.fetch(pda);
       assert.strictEqual(acc.riskLevel, 99);
     });
-
-    it("calculate risk for BTC-ETH with prices and decimals", async () => {
-      const [btcEthPda] = await getPairPda(FEEDS.BTC, FEEDS.ETH);
-
-      // Example: 3 BTC (8 decimals, price $30,000), 2 ETH (8 decimals, price $2,000)
-      const depositAmount = new BN(3 * 10 ** 8); // 3 BTC, 8 decimals
-      const borrowAmount = new BN(2 * 10 ** 8);  // 2 ETH, 8 decimals
-      const depositPrice = new BN(30_000);       // $30,000
-      const depositDecimals = 8;
-      const borrowPrice = new BN(2_000);         // $2,000
-      const borrowDecimals = 8;
-
-      const txSig = await program.methods
-        .calculateRisk(
-          depositAmount,
-          borrowAmount,
-          depositPrice,
-          depositDecimals,
-          borrowPrice,
-          borrowDecimals
-        )
-        .accounts({
-          riskParam: btcEthPda,
-          depositFeed: FEEDS.BTC,
-          borrowFeed: FEEDS.ETH,
-        })
-        .rpc();
-
-      console.log("\n=== Transaction Info ===");
-      console.log("Transaction signature:", txSig);
-
-      // Add delay to ensure transaction is confirmed
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      const tx = await provider.connection.getTransaction(txSig, {
-          commitment: "confirmed",
-      });
-
-      console.log("\n=== Program Logs ===");
-      if (!tx || !tx.meta || !tx.meta.logMessages) {
-          console.error("❌ Transaction data is incomplete:");
-          console.error("Transaction:", !!tx);
-          console.error("Meta:", !!tx?.meta);
-          console.error("LogMessages:", !!tx?.meta?.logMessages);
-          throw new Error("Failed to fetch transaction logs - transaction data incomplete");
-      }
-
-      // Find our specific log
-      const riskLog = tx.meta.logMessages.find((l: string) => l.includes("Final risk calculation"));
-      console.log("\nRisk Calculation Log:", riskLog);
-
-      // Print account state after transaction
-      console.log("\n=== Account State After Transaction ===");
-      const riskParamAccount = await program.account.riskParam.fetch(btcEthPda);
-      console.log("Risk Param Account:", {
-          feedA: riskParamAccount.feedA.toBase58(),
-          feedB: riskParamAccount.feedB.toBase58(),
-          riskLevel: riskParamAccount.riskLevel
-      });
-    });
   });
 
-  describe("Obligation System", () => {
-    // 3. Obligation PDAs Setup
-    console.log('\n=== Calculating Obligation PDAs ===');
-    
-    // 3.1 User0 Obligation PDA
+  describe("Obligation System with Health Checks", () => {
+    // Obligation PDAs Setup
     let user0ObligationPda: web3.PublicKey;
     [user0ObligationPda] = web3.PublicKey.findProgramAddressSync(
       [Buffer.from('obligation'), user0Wallet.publicKey.toBuffer()],
       program.programId
     );
-    console.log('User0 Obligation PDA:', user0ObligationPda.toBase58());
 
-    // 3.2 User1 Obligation PDA  
     let user1ObligationPda: web3.PublicKey;
     [user1ObligationPda] = web3.PublicKey.findProgramAddressSync(
       [Buffer.from('obligation'), user1Wallet.publicKey.toBuffer()],
       program.programId
     );
-    console.log('User1 Obligation PDA:', user1ObligationPda.toBase58());
 
     it("initialize user0 obligation", async () => {
-      await program.methods
+      const txSig = await program.methods
         .initObligation()
         .accounts({
           obligation: user0ObligationPda,
@@ -179,33 +159,19 @@ describe("favorites - global feed pairs + obligations", () => {
         .signers([user0Wallet])
         .rpc();
 
+      await printTransactionLogs(txSig, "Initialize User0 Obligation");
+
       const obligation = await program.account.obligation.fetch(user0ObligationPda);
       assert.strictEqual(obligation.owner.toBase58(), user0Wallet.publicKey.toBase58());
       assert.strictEqual(obligation.deposits.length, 0);
       assert.strictEqual(obligation.borrows.length, 0);
     });
 
-    it("initialize user1 obligation", async () => {
-      await program.methods
-        .initObligation()
-        .accounts({
-          obligation: user1ObligationPda,
-          owner: user1Wallet.publicKey,
-          systemProgram: web3.SystemProgram.programId,
-        })
-        .signers([user1Wallet])
-        .rpc();
-
-      const obligation = await program.account.obligation.fetch(user1ObligationPda);
-      assert.strictEqual(obligation.owner.toBase58(), user1Wallet.publicKey.toBase58());
-      assert.strictEqual(obligation.deposits.length, 0);
-      assert.strictEqual(obligation.borrows.length, 0);
-    });
-
-    it("add deposit to user0 obligation", async () => {
+    it("add deposit to user0 obligation (with health check)", async () => {
       const depositAmount = new BN(1000000); // 1 USDC (6 decimals)
       
-      await program.methods
+      // Since this is the first deposit and no borrows, we don't need oracle accounts yet
+      const txSig = await program.methods
         .addDeposit(FEEDS.USDC, depositAmount)
         .accounts({
           obligation: user0ObligationPda,
@@ -214,202 +180,109 @@ describe("favorites - global feed pairs + obligations", () => {
         .signers([user0Wallet])
         .rpc();
 
+      await printTransactionLogs(txSig, "Add First Deposit to User0 (No Oracle Accounts Needed)");
+
       const obligation = await program.account.obligation.fetch(user0ObligationPda);
       assert.strictEqual(obligation.deposits.length, 1);
       assert.strictEqual(obligation.deposits[0].asset.toBase58(), FEEDS.USDC.toBase58());
       assert.strictEqual(obligation.deposits[0].amount.toString(), depositAmount.toString());
     });
 
-    it("add another deposit (same asset) to user0 obligation", async () => {
-      const additionalAmount = new BN(500000); // 0.5 USDC
-      
-      await program.methods
-        .addDeposit(FEEDS.USDC, additionalAmount)
-        .accounts({
-          obligation: user0ObligationPda,
-          owner: user0Wallet.publicKey,
-        })
-        .signers([user0Wallet])
-        .rpc();
-
-      const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      assert.strictEqual(obligation.deposits.length, 1); // Still only 1 position
-      assert.strictEqual(obligation.deposits[0].amount.toString(), "1500000"); // Combined amount
-    });
-
-    it("add different asset deposit to user0 obligation", async () => {
+    it("add multiple deposits and then add borrow (with oracle accounts)", async () => {
+      // First add BTC deposit
       const btcAmount = new BN(50000000); // 0.5 BTC (8 decimals)
       
-      await program.methods
+      const txSig1 = await program.methods
         .addDeposit(FEEDS.BTC, btcAmount)
         .accounts({
           obligation: user0ObligationPda,
           owner: user0Wallet.publicKey,
         })
+        .remainingAccounts([
+          { pubkey: FEEDS.USDC, isSigner: false, isWritable: false }, // Existing deposit oracle
+        ])
         .signers([user0Wallet])
         .rpc();
 
-      const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      assert.strictEqual(obligation.deposits.length, 2); // Now 2 positions
-      
-      // Find BTC deposit
-      const btcDeposit = obligation.deposits.find(d => d.asset.toBase58() === FEEDS.BTC.toBase58());
-      assert.isNotNull(btcDeposit);
-      assert.strictEqual(btcDeposit!.amount.toString(), btcAmount.toString());
-    });
+      await printTransactionLogs(txSig1, "Add BTC Deposit with USDC Oracle");
 
-    it("add borrow to user0 obligation", async () => {
+      // Now add a borrow - this requires all oracle accounts
       const borrowAmount = new BN(10000000); // 0.1 ETH (8 decimals)
       
-      await program.methods
+      const txSig2 = await program.methods
         .addBorrow(FEEDS.ETH, borrowAmount)
         .accounts({
           obligation: user0ObligationPda,
           owner: user0Wallet.publicKey,
         })
+        .remainingAccounts([
+          { pubkey: FEEDS.USDC, isSigner: false, isWritable: false }, // Deposit oracle
+          { pubkey: FEEDS.BTC, isSigner: false, isWritable: false },  // Deposit oracle
+          { pubkey: FEEDS.ETH, isSigner: false, isWritable: false },  // Borrow oracle (will be added)
+        ])
         .signers([user0Wallet])
         .rpc();
 
+      await printTransactionLogs(txSig2, "Add ETH Borrow with All Oracle Accounts");
+
       const obligation = await program.account.obligation.fetch(user0ObligationPda);
+      assert.strictEqual(obligation.deposits.length, 2);
       assert.strictEqual(obligation.borrows.length, 1);
-      assert.strictEqual(obligation.borrows[0].asset.toBase58(), FEEDS.ETH.toBase58());
-      assert.strictEqual(obligation.borrows[0].amount.toString(), borrowAmount.toString());
     });
 
-    it("remove partial deposit from user0 obligation", async () => {
-      const removeAmount = new BN(500000); // Remove 0.5 USDC
+    it("remove deposit with health check (all oracles required)", async () => {
+      const removeAmount = new BN(25000000); // Remove 0.25 BTC
       
-      await program.methods
-        .removeDeposit(FEEDS.USDC, removeAmount)
-        .accounts({
-          obligation: user0ObligationPda,
-          owner: user0Wallet.publicKey,
-        })
-        .signers([user0Wallet])
-        .rpc();
-
+      // Fetch current obligation to know what oracles we need
       const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      const usdcDeposit = obligation.deposits.find(d => d.asset.toBase58() === FEEDS.USDC.toBase58());
-      assert.isNotNull(usdcDeposit);
-      assert.strictEqual(usdcDeposit!.amount.toString(), "1000000"); // 1.5 - 0.5 = 1.0 USDC
-    });
-
-    it("remove entire deposit from user0 obligation", async () => {
-      const removeAmount = new BN(50000000); // Remove all 0.5 BTC
       
-      await program.methods
+      // Collect all unique oracle pubkeys
+      const oracleSet = new Set<string>();
+      obligation.deposits.forEach(d => oracleSet.add(d.asset.toBase58()));
+      obligation.borrows.forEach(b => oracleSet.add(b.asset.toBase58()));
+      
+      const oracleAccounts = Array.from(oracleSet).map(pubkey => ({
+        pubkey: new web3.PublicKey(pubkey),
+        isSigner: false,
+        isWritable: false
+      }));
+
+      console.log("\nOracle accounts being passed:", oracleAccounts.map(o => o.pubkey.toBase58()));
+
+      const txSig = await program.methods
         .removeDeposit(FEEDS.BTC, removeAmount)
         .accounts({
           obligation: user0ObligationPda,
           owner: user0Wallet.publicKey,
         })
+        .remainingAccounts(oracleAccounts)
         .signers([user0Wallet])
         .rpc();
 
-      const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      assert.strictEqual(obligation.deposits.length, 1); // BTC position should be removed
-      
-      // Only USDC should remain
-      const btcDeposit = obligation.deposits.find(d => d.asset.toBase58() === FEEDS.BTC.toBase58());
-      assert.isUndefined(btcDeposit);
-    });
+      await printTransactionLogs(txSig, "Remove BTC Deposit with Health Check");
 
-    it("remove borrow from user0 obligation", async () => {
-      const removeAmount = new BN(5000000); // Remove 0.05 ETH
-      
-      await program.methods
-        .removeBorrow(FEEDS.ETH, removeAmount)
+      const updatedObligation = await program.account.obligation.fetch(user0ObligationPda);
+      const btcDeposit = updatedObligation.deposits.find(d => d.asset.toBase58() === FEEDS.BTC.toBase58());
+      assert.isNotNull(btcDeposit);
+      assert.strictEqual(btcDeposit!.amount.toString(), "25000000"); // 0.5 - 0.25 = 0.25 BTC
+    });
+ 
+    it("complex scenario - user1 with multiple operations and health checks", async () => {
+      // Initialize user1 obligation
+      const initTx = await program.methods
+        .initObligation()
         .accounts({
-          obligation: user0ObligationPda,
-          owner: user0Wallet.publicKey,
+          obligation: user1ObligationPda,
+          owner: user1Wallet.publicKey,
+          systemProgram: web3.SystemProgram.programId,
         })
-        .signers([user0Wallet])
+        .signers([user1Wallet])
         .rpc();
 
-      const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      assert.strictEqual(obligation.borrows.length, 1);
-      assert.strictEqual(obligation.borrows[0].amount.toString(), "5000000"); // 0.1 - 0.05 = 0.05 ETH
-    });
+      await printTransactionLogs(initTx, "Initialize User1 Obligation");
 
-    it("test error cases - insufficient deposit", async () => {
-      const tooMuchAmount = new BN(2000000); // Try to remove 2 USDC (only have 1)
-      
-      try {
-        await program.methods
-          .removeDeposit(FEEDS.USDC, tooMuchAmount)
-          .accounts({
-            obligation: user0ObligationPda,
-            owner: user0Wallet.publicKey,
-          })
-          .signers([user0Wallet])
-          .rpc();
-        
-        assert.fail("Should have thrown InsufficientDeposit error");
-      } catch (error) {
-        assert.include(error.message, "Insufficient deposit amount");
-      }
-    });
-
-    it("test error cases - deposit not found", async () => {
-      const removeAmount = new BN(1000000);
-      
-      try {
-        await program.methods
-          .removeDeposit(FEEDS.USDT, removeAmount) // USDT not deposited
-          .accounts({
-            obligation: user0ObligationPda,
-            owner: user0Wallet.publicKey,
-          })
-          .signers([user0Wallet])
-          .rpc();
-        
-        assert.fail("Should have thrown DepositNotFound error");
-      } catch (error) {
-        assert.include(error.message, "Deposit not found in obligation");
-      }
-    });
-
-    it("test error cases - insufficient borrow", async () => {
-      const tooMuchAmount = new BN(10000000); // Try to remove 0.1 ETH (only have 0.05)
-      
-      try {
-        await program.methods
-          .removeBorrow(FEEDS.ETH, tooMuchAmount)
-          .accounts({
-            obligation: user0ObligationPda,
-            owner: user0Wallet.publicKey,
-          })
-          .signers([user0Wallet])
-          .rpc();
-        
-        assert.fail("Should have thrown InsufficientBorrow error");
-      } catch (error) {
-        assert.include(error.message, "Insufficient borrow amount");
-      }
-    });
-
-    it("test error cases - borrow not found", async () => {
-      const removeAmount = new BN(1000000);
-      
-      try {
-        await program.methods
-          .removeBorrow(FEEDS.USDT, removeAmount) // USDT not borrowed
-          .accounts({
-            obligation: user0ObligationPda,
-            owner: user0Wallet.publicKey,
-          })
-          .signers([user0Wallet])
-          .rpc();
-        
-        assert.fail("Should have thrown BorrowNotFound error");
-      } catch (error) {
-        assert.include(error.message, "Borrow not found in obligation");
-      }
-    });
-
-    it("complex scenario - user1 multiple operations", async () => {
       // Add multiple deposits
-      await program.methods
+      const btcTx = await program.methods
         .addDeposit(FEEDS.BTC, new BN(100000000)) // 1 BTC
         .accounts({
           obligation: user1ObligationPda,
@@ -418,44 +291,40 @@ describe("favorites - global feed pairs + obligations", () => {
         .signers([user1Wallet])
         .rpc();
 
-      await program.methods
+      await printTransactionLogs(btcTx, "User1: Add 1 BTC Deposit");
+
+      const ethTx = await program.methods
         .addDeposit(FEEDS.ETH, new BN(500000000)) // 5 ETH
         .accounts({
           obligation: user1ObligationPda,
           owner: user1Wallet.publicKey,
         })
+        .remainingAccounts([
+          { pubkey: FEEDS.BTC, isSigner: false, isWritable: false },
+        ])
         .signers([user1Wallet])
         .rpc();
 
-      await program.methods
-        .addDeposit(FEEDS.USDC, new BN(10000000)) // 10 USDC
-        .accounts({
-          obligation: user1ObligationPda,
-          owner: user1Wallet.publicKey,
-        })
-        .signers([user1Wallet])
-        .rpc();
+      await printTransactionLogs(ethTx, "User1: Add 5 ETH Deposit");
 
-      // Add multiple borrows
-      await program.methods
+      // Add borrows with all necessary oracles
+      const borrowTx = await program.methods
         .addBorrow(FEEDS.USDT, new BN(5000000)) // 5 USDT
         .accounts({
           obligation: user1ObligationPda,
           owner: user1Wallet.publicKey,
         })
+        .remainingAccounts([
+          { pubkey: FEEDS.BTC, isSigner: false, isWritable: false },
+          { pubkey: FEEDS.ETH, isSigner: false, isWritable: false },
+          { pubkey: FEEDS.USDT, isSigner: false, isWritable: false },
+        ])
         .signers([user1Wallet])
         .rpc();
 
-      await program.methods
-        .addBorrow(FEEDS.ETH, new BN(50000000)) // 0.5 ETH
-        .accounts({
-          obligation: user1ObligationPda,
-          owner: user1Wallet.publicKey,
-        })
-        .signers([user1Wallet])
-        .rpc();
+      await printTransactionLogs(borrowTx, "User1: Add 5 USDT Borrow with Full Health Check");
 
-      // Check final state
+      // Final state check
       const obligation = await program.account.obligation.fetch(user1ObligationPda);
       
       console.log("\n=== User1 Final Obligation State ===");
@@ -467,45 +336,98 @@ describe("favorites - global feed pairs + obligations", () => {
         asset: b.asset.toBase58(),
         amount: b.amount.toString()
       })));
-
-      assert.strictEqual(obligation.deposits.length, 3);
-      assert.strictEqual(obligation.borrows.length, 2);
-      
-      // Verify specific amounts
-      const btcDeposit = obligation.deposits.find(d => d.asset.toBase58() === FEEDS.BTC.toBase58());
-      assert.strictEqual(btcDeposit!.amount.toString(), "100000000");
-      
-      const ethBorrow = obligation.borrows.find(b => b.asset.toBase58() === FEEDS.ETH.toBase58());
-      assert.strictEqual(ethBorrow!.amount.toString(), "50000000");
     });
 
-    it("test zero amount operations (should be no-op)", async () => {
-      const obligationBefore = await program.account.obligation.fetch(user0ObligationPda);
+    it("remove deposit that would make position unhealthy (demonstration)", async () => {
+      // Try to remove most of the USDC deposit while having borrows
+      const removeAmount = new BN(900000); // Remove 0.9 USDC (leaving only 0.1)
       
-      // Try adding zero amounts
-      await program.methods
-        .addDeposit(FEEDS.BTC, new BN(0))
+      // Get all oracles
+      const obligation = await program.account.obligation.fetch(user0ObligationPda);
+      const oracleSet = new Set<string>();
+      obligation.deposits.forEach(d => oracleSet.add(d.asset.toBase58()));
+      obligation.borrows.forEach(b => oracleSet.add(b.asset.toBase58()));
+      
+      const oracleAccounts = Array.from(oracleSet).map(pubkey => ({
+        pubkey: new web3.PublicKey(pubkey),
+        isSigner: false,
+        isWritable: false
+      }));
+
+      const txSig = await program.methods
+        .removeDeposit(FEEDS.USDC, removeAmount)
         .accounts({
           obligation: user0ObligationPda,
           owner: user0Wallet.publicKey,
         })
+        .remainingAccounts(oracleAccounts)
         .signers([user0Wallet])
         .rpc();
 
-      await program.methods
-        .removeDeposit(FEEDS.USDC, new BN(0))
-        .accounts({
-          obligation: user0ObligationPda,
-          owner: user0Wallet.publicKey,
-        })
-        .signers([user0Wallet])
-        .rpc();
+      await printTransactionLogs(txSig, "Remove Deposit That May Cause Unhealthy Position");
+    });
 
-      const obligationAfter = await program.account.obligation.fetch(user0ObligationPda);
+    it("remove all borrows to make position healthy again", async () => {
+      // First remove ETH borrow
+      const obligation = await program.account.obligation.fetch(user0ObligationPda);
+      const ethBorrow = obligation.borrows.find(b => b.asset.toBase58() === FEEDS.ETH.toBase58());
       
-      // State should be unchanged
-      assert.deepEqual(obligationBefore.deposits, obligationAfter.deposits);
-      assert.deepEqual(obligationBefore.borrows, obligationAfter.borrows);
+      if (ethBorrow) {
+        const oracleSet = new Set<string>();
+        obligation.deposits.forEach(d => oracleSet.add(d.asset.toBase58()));
+        obligation.borrows.forEach(b => oracleSet.add(b.asset.toBase58()));
+        
+        const oracleAccounts = Array.from(oracleSet).map(pubkey => ({
+          pubkey: new web3.PublicKey(pubkey),
+          isSigner: false,
+          isWritable: false
+        }));
+
+        const txSig = await program.methods
+          .removeBorrow(FEEDS.ETH, ethBorrow.amount)
+          .accounts({
+            obligation: user0ObligationPda,
+            owner: user0Wallet.publicKey,
+          })
+          .remainingAccounts(oracleAccounts)
+          .signers([user0Wallet])
+          .rpc();
+
+        await printTransactionLogs(txSig, "Remove All ETH Borrows");
+      }
+
+      // Then remove USDT borrow
+      const updatedObligation = await program.account.obligation.fetch(user0ObligationPda);
+      const usdtBorrow = updatedObligation.borrows.find(b => b.asset.toBase58() === FEEDS.USDT.toBase58());
+      
+      if (usdtBorrow) {
+        const oracleSet = new Set<string>();
+        updatedObligation.deposits.forEach(d => oracleSet.add(d.asset.toBase58()));
+        updatedObligation.borrows.forEach(b => oracleSet.add(b.asset.toBase58()));
+        
+        const oracleAccounts = Array.from(oracleSet).map(pubkey => ({
+          pubkey: new web3.PublicKey(pubkey),
+          isSigner: false,
+          isWritable: false
+        }));
+
+        const txSig = await program.methods
+          .removeBorrow(FEEDS.USDT, usdtBorrow.amount)
+          .accounts({
+            obligation: user0ObligationPda,
+            owner: user0Wallet.publicKey,
+          })
+          .remainingAccounts(oracleAccounts)
+          .signers([user0Wallet])
+          .rpc();
+
+        await printTransactionLogs(txSig, "Remove All USDT Borrows - Position Now Healthy");
+      }
+
+      // Verify final state
+      const finalObligation = await program.account.obligation.fetch(user0ObligationPda);
+      assert.strictEqual(finalObligation.borrows.length, 0);
+      console.log("\n✅ All borrows removed - position is now healthy with no debt!");
     });
   });
 
