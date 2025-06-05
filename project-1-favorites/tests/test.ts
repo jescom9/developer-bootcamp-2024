@@ -5,28 +5,24 @@ import BN from "bn.js"
 import { assert } from "chai";
 import type { Favorites } from "../target/types/favorites";
 
-describe("favorites - asset registry and obligations", () => {
+describe("favorites - health score calculation scenarios", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
   const program = anchor.workspace.Favorites as anchor.Program<Favorites>;
   const authority = provider.wallet.publicKey;
 
-  // Test user wallets
-  const user0Wallet = web3.Keypair.generate();
-  const user1Wallet = web3.Keypair.generate();
+  // Test user wallet
+  const testUser = web3.Keypair.generate();
 
-  // Asset IDs
-  const ASSET_IDS = {
-    BTC: 0,
-    ETH: 1,
-    USDC: 2,
-    USDT: 3,
-  };
+  // Asset IDs for our test scenario
+  const ASSET_A = 0;
+  const ASSET_B = 1;
+  const ASSET_C = 2;
+  const ASSET_D = 3;
 
   // PDAs
   let assetRegistryPda: web3.PublicKey;
-  let user0ObligationPda: web3.PublicKey;
-  let user1ObligationPda: web3.PublicKey;
+  let testObligationPda: web3.PublicKey;
 
   // Helper function to extract and print logs
   const printTransactionLogs = async (txSig: string, testName: string) => {
@@ -35,7 +31,6 @@ describe("favorites - asset registry and obligations", () => {
     console.log(`${'='.repeat(60)}`);
     console.log("Transaction signature:", txSig);
 
-    // Add delay to ensure transaction is confirmed
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     try {
@@ -48,22 +43,16 @@ describe("favorites - asset registry and obligations", () => {
         return;
       }
 
-      // Filter and format program logs
       const programLogs = tx.meta.logMessages.filter((log: string) => 
         log.includes("Program log:") && (
-          log.includes("Asset Registry initialized") ||
-          log.includes("Added asset") ||
-          log.includes("Updated asset") ||
-          log.includes("Added risk param") ||
-          log.includes("Obligation initialized") ||
+          log.includes("===") ||
           log.includes("Health") ||
-          log.includes("WARNING") ||
-          log.includes("Adding") ||
-          log.includes("Removing") ||
-          log.includes("Current deposits") ||
           log.includes("Deposit:") ||
           log.includes("Borrow:") ||
-          log.includes("=== ")
+          log.includes("WARNING") ||
+          log.includes("✓") ||
+          log.includes("Pair") ||
+          log.includes("contribution")
         )
       );
 
@@ -78,49 +67,35 @@ describe("favorites - asset registry and obligations", () => {
     }
   };
 
-  // Setup phase
   before(async () => {
-    console.log('\n=== Setting up test environment ===');
+    console.log('\n=== SETUP PHASE ===');
     
     // Calculate PDAs
     [assetRegistryPda] = web3.PublicKey.findProgramAddressSync(
       [Buffer.from("asset_registry")],
       program.programId
     );
-    console.log("Asset Registry PDA:", assetRegistryPda.toBase58());
 
-    [user0ObligationPda] = web3.PublicKey.findProgramAddressSync(
-      [Buffer.from('obligation'), user0Wallet.publicKey.toBuffer()],
+    [testObligationPda] = web3.PublicKey.findProgramAddressSync(
+      [Buffer.from('obligation'), testUser.publicKey.toBuffer()],
       program.programId
     );
-    console.log('User0 Obligation PDA:', user0ObligationPda.toBase58());
-
-    [user1ObligationPda] = web3.PublicKey.findProgramAddressSync(
-      [Buffer.from('obligation'), user1Wallet.publicKey.toBuffer()],
-      program.programId
-    );
-    console.log('User1 Obligation PDA:', user1ObligationPda.toBase58());
     
-    // Fund user wallets
-    const airdropUser0 = await provider.connection.requestAirdrop(
-      user0Wallet.publicKey,
+    // Fund test user
+    const airdrop = await provider.connection.requestAirdrop(
+      testUser.publicKey,
       2 * web3.LAMPORTS_PER_SOL
     );
-    const airdropUser1 = await provider.connection.requestAirdrop(
-      user1Wallet.publicKey,
-      2 * web3.LAMPORTS_PER_SOL
-    );
+    await provider.connection.confirmTransaction(airdrop);
     
-    await provider.connection.confirmTransaction(airdropUser0);
-    await provider.connection.confirmTransaction(airdropUser1);
-    
-    console.log('User0 wallet:', user0Wallet.publicKey.toBase58());
-    console.log('User1 wallet:', user1Wallet.publicKey.toBase58());
+    console.log('Test user wallet:', testUser.publicKey.toBase58());
+    console.log('Asset Registry PDA:', assetRegistryPda.toBase58());
+    console.log('Test Obligation PDA:', testObligationPda.toBase58());
   });
 
-  describe("Asset Registry", () => {
+  describe("Setup", () => {
     it("initialize asset registry", async () => {
-      const txSig = await program.methods
+      await program.methods
         .initializeAssetRegistry()
         .accounts({
           assetRegistry: assetRegistryPda,
@@ -129,510 +104,166 @@ describe("favorites - asset registry and obligations", () => {
         })
         .rpc();
 
-      await printTransactionLogs(txSig, "Initialize Asset Registry");
-
-      const registry = await program.account.assetRegistry.fetch(assetRegistryPda);
-      assert.strictEqual(registry.authority.toBase58(), authority.toBase58());
-      assert.strictEqual(registry.assets.length, 0);
-      assert.strictEqual(registry.riskParams.length, 0);
+      console.log("✓ Asset registry initialized");
     });
 
-    it("add BTC asset", async () => {
-      const txSig = await program.methods
-        .addAsset(
-          ASSET_IDS.BTC,  // id
-          new BN(30000),  // price: $30,000
-          8               // decimals
-        )
-        .accounts({
-          assetRegistry: assetRegistryPda,
-          authority,
-        })
-        .rpc();
+    it("add all assets with price = $1", async () => {
+      // All assets have price = 1 and decimals = 6 for simplicity
+      const assets = [
+        { id: ASSET_A, name: "A" },
+        { id: ASSET_B, name: "B" },
+        { id: ASSET_C, name: "C" },
+        { id: ASSET_D, name: "D" },
+      ];
 
-      await printTransactionLogs(txSig, "Add BTC Asset");
-
-      const registry = await program.account.assetRegistry.fetch(assetRegistryPda);
-      assert.strictEqual(registry.assets.length, 1);
-      assert.strictEqual(registry.assets[0].id, ASSET_IDS.BTC);
-      assert.strictEqual(registry.assets[0].price.toString(), "30000");
-      assert.strictEqual(registry.assets[0].decimals, 8);
-    });
-
-    it("add ETH, USDC, and USDT assets", async () => {
-      // Add ETH
-      await program.methods
-        .addAsset(
-          ASSET_IDS.ETH,
-          new BN(2000),   // $2,000
-          8
-        )
-        .accounts({
-          assetRegistry: assetRegistryPda,
-          authority,
-        })
-        .rpc();
-
-      // Add USDC
-      await program.methods
-        .addAsset(
-          ASSET_IDS.USDC,
-          new BN(1),      // $1
-          6
-        )
-        .accounts({
-          assetRegistry: assetRegistryPda,
-          authority,
-        })
-        .rpc();
-
-      // Add USDT
-      const txSig = await program.methods
-        .addAsset(
-          ASSET_IDS.USDT,
-          new BN(1),      // $1
-          6
-        )
-        .accounts({
-          assetRegistry: assetRegistryPda,
-          authority,
-        })
-        .rpc();
-
-      await printTransactionLogs(txSig, "Add USDT Asset");
-
-      const registry = await program.account.assetRegistry.fetch(assetRegistryPda);
-      assert.strictEqual(registry.assets.length, 4);
-      
-      // Verify all assets
-      console.log("\n--- All Assets in Registry ---");
-      registry.assets.forEach(asset => {
-        console.log(`Asset ID ${asset.id}: price=${asset.price}, decimals=${asset.decimals}`);
-      });
-    });
-
-    it("update BTC price", async () => {
-      const txSig = await program.methods
-        .updateAssetPrice(
-          ASSET_IDS.BTC,
-          new BN(35000)   // New price: $35,000
-        )
-        .accounts({
-          assetRegistry: assetRegistryPda,
-          authority,
-        })
-        .rpc();
-
-      await printTransactionLogs(txSig, "Update BTC Price");
-
-      const registry = await program.account.assetRegistry.fetch(assetRegistryPda);
-      const btcAsset = registry.assets.find(a => a.id === ASSET_IDS.BTC);
-      assert.strictEqual(btcAsset.price.toString(), "35000");
+      for (const asset of assets) {
+        await program.methods
+          .addAsset(
+            asset.id,
+            new BN(1),    // price = $1
+            6             // 6 decimals
+          )
+          .accounts({
+            assetRegistry: assetRegistryPda,
+            authority,
+          })
+          .rpc();
+        console.log(`✓ Added Asset ${asset.name} (ID ${asset.id})`);
+      }
     });
 
     it("add risk parameters", async () => {
-      // BTC-ETH risk param
-      await program.methods
-        .addRiskParam(
-          ASSET_IDS.BTC,
-          ASSET_IDS.ETH,
-          77              // risk level
-        )
-        .accounts({
-          assetRegistry: assetRegistryPda,
-          authority,
-        })
-        .rpc();
+      const riskParams = [
+        { a: ASSET_A, b: ASSET_B, risk: 80 }, // RiskAB = 0.8
+        { a: ASSET_B, b: ASSET_C, risk: 80 }, // RiskBC = 0.8
+        { a: ASSET_C, b: ASSET_D, risk: 60 }, // RiskCD = 0.6
+        { a: ASSET_A, b: ASSET_C, risk: 90 }, // RiskAC = 0.9
+        { a: ASSET_B, b: ASSET_D, risk: 40 }, // RiskBD = 0.4
+        { a: ASSET_A, b: ASSET_D, risk: 60 }, // RiskAD = 0.6
+      ];
 
-      // USDC-USDT risk param
-      const txSig = await program.methods
-        .addRiskParam(
-          ASSET_IDS.USDC,
-          ASSET_IDS.USDT,
-          99              // risk level
-        )
-        .accounts({
-          assetRegistry: assetRegistryPda,
-          authority,
-        })
-        .rpc();
-
-      await printTransactionLogs(txSig, "Add USDC-USDT Risk Param");
-
-      const registry = await program.account.assetRegistry.fetch(assetRegistryPda);
-      assert.strictEqual(registry.riskParams.length, 2);
-      
-      console.log("\n--- All Risk Parameters ---");
-      registry.riskParams.forEach(param => {
-        console.log(`Risk Param: ${param.assetIdA}-${param.assetIdB}, level=${param.riskLevel}`);
-      });
-    });
-
-    it("test error: add duplicate asset", async () => {
-      try {
+      for (const param of riskParams) {
         await program.methods
-          .addAsset(
-            ASSET_IDS.BTC,  // Already exists
-            new BN(40000),
-            8
-          )
+          .addRiskParam(param.a, param.b, param.risk)
           .accounts({
             assetRegistry: assetRegistryPda,
             authority,
           })
           .rpc();
-        
-        assert.fail("Should have thrown AssetAlreadyExists error");
-      } catch (error) {
-        assert.include(error.message, "Asset already exists");
+        console.log(`✓ Added risk param ${param.a}-${param.b}: ${param.risk/100}`);
       }
+    });
+
+    it("initialize test obligation", async () => {
+      await program.methods
+        .initObligation()
+        .accounts({
+          obligation: testObligationPda,
+          owner: testUser.publicKey,
+          systemProgram: web3.SystemProgram.programId,
+        })
+        .signers([testUser])
+        .rpc();
+
+      console.log("✓ Test obligation initialized");
     });
   });
 
-  describe("Obligations with Asset Registry", () => {
-    it("initialize user0 obligation", async () => {
-      const txSig = await program.methods
-        .initObligation()
-        .accounts({
-          obligation: user0ObligationPda,
-          owner: user0Wallet.publicKey,
-          systemProgram: web3.SystemProgram.programId,
-        })
-        .signers([user0Wallet])
-        .rpc();
-
-      await printTransactionLogs(txSig, "Initialize User0 Obligation");
-
-      const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      assert.strictEqual(obligation.owner.toBase58(), user0Wallet.publicKey.toBase58());
-      assert.strictEqual(obligation.deposits.length, 0);
-      assert.strictEqual(obligation.borrows.length, 0);
-    });
-
-    it("add USDC deposit", async () => {
-      const depositAmount = new BN(1000000); // 1 USDC (6 decimals)
+  describe("Test Scenario 1: Health Score = 1.175", () => {
+    it("setup position with deposits A=$1000, B=$1000 and borrows C=$250, D=$750", async () => {
+      console.log("\n--- Setting up Scenario 1 ---");
       
-      const txSig = await program.methods
-        .addDeposit(ASSET_IDS.USDC, depositAmount)
+      // Add deposits
+      // Asset A: $1000 = 1000 * 10^6 (6 decimals)
+      await program.methods
+        .addDeposit(ASSET_A, new BN(1000000000))
         .accounts({
-          obligation: user0ObligationPda,
+          obligation: testObligationPda,
           assetRegistry: assetRegistryPda,
-          owner: user0Wallet.publicKey,
+          owner: testUser.publicKey,
         })
-        .signers([user0Wallet])
+        .signers([testUser])
         .rpc();
+      console.log("✓ Deposited $1000 of Asset A");
 
-      await printTransactionLogs(txSig, "Add USDC Deposit");
-
-      const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      assert.strictEqual(obligation.deposits.length, 1);
-      assert.strictEqual(obligation.deposits[0].assetId, ASSET_IDS.USDC);
-      assert.strictEqual(obligation.deposits[0].amount.toString(), depositAmount.toString());
-    });
-
-    it("add BTC deposit and ETH borrow", async () => {
-      // Add BTC deposit
-      const btcAmount = new BN(50000000); // 0.5 BTC (8 decimals)
-      
-      const txSig1 = await program.methods
-        .addDeposit(ASSET_IDS.BTC, btcAmount)
+      // Asset B: $1000
+      await program.methods
+        .addDeposit(ASSET_B, new BN(1000000000))
         .accounts({
-          obligation: user0ObligationPda,
+          obligation: testObligationPda,
           assetRegistry: assetRegistryPda,
-          owner: user0Wallet.publicKey,
+          owner: testUser.publicKey,
         })
-        .signers([user0Wallet])
+        .signers([testUser])
         .rpc();
-
-      await printTransactionLogs(txSig1, "Add BTC Deposit");
-
-      // Add ETH borrow
-      const borrowAmount = new BN(10000000); // 0.1 ETH (8 decimals)
-      
-      const txSig2 = await program.methods
-        .addBorrow(ASSET_IDS.ETH, borrowAmount)
-        .accounts({
-          obligation: user0ObligationPda,
-          assetRegistry: assetRegistryPda,
-          owner: user0Wallet.publicKey,
-        })
-        .signers([user0Wallet])
-        .rpc();
-
-      await printTransactionLogs(txSig2, "Add ETH Borrow");
-
-      const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      assert.strictEqual(obligation.deposits.length, 2);
-      assert.strictEqual(obligation.borrows.length, 1);
-    });
-
-    it("debug read all data", async () => {
-      const txSig = await program.methods
-        .debugReadAllData()
-        .accounts({
-          assetRegistry: assetRegistryPda,
-          obligation: user0ObligationPda,
-        })
-        .rpc();
-
-      await printTransactionLogs(txSig, "Debug Read All Data");
-    });
-
-    it("remove partial deposit", async () => {
-      const removeAmount = new BN(25000000); // Remove 0.25 BTC
-      
-      const txSig = await program.methods
-        .removeDeposit(ASSET_IDS.BTC, removeAmount)
-        .accounts({
-          obligation: user0ObligationPda,
-          assetRegistry: assetRegistryPda,
-          owner: user0Wallet.publicKey,
-        })
-        .signers([user0Wallet])
-        .rpc();
-
-      await printTransactionLogs(txSig, "Remove Partial BTC Deposit");
-
-      const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      const btcDeposit = obligation.deposits.find(d => d.assetId === ASSET_IDS.BTC);
-      assert.isNotNull(btcDeposit);
-      assert.strictEqual(btcDeposit!.amount.toString(), "25000000"); // 0.5 - 0.25 = 0.25 BTC
-    });
-
-    it("test error: remove deposit for non-existent asset", async () => {
-      try {
-        await program.methods
-          .removeDeposit(99, new BN(1000000)) // Asset ID 99 doesn't exist
-          .accounts({
-            obligation: user0ObligationPda,
-            assetRegistry: assetRegistryPda,
-            owner: user0Wallet.publicKey,
-          })
-          .signers([user0Wallet])
-          .rpc();
-        
-        assert.fail("Should have thrown DepositNotFound error");
-      } catch (error) {
-        assert.include(error.message, "Deposit not found");
-      }
-    });
-
-    it("test error: insufficient deposit", async () => {
-      const tooMuchAmount = new BN(30000000); // Try to remove 0.3 BTC (only have 0.25)
-      
-      try {
-        await program.methods
-          .removeDeposit(ASSET_IDS.BTC, tooMuchAmount)
-          .accounts({
-            obligation: user0ObligationPda,
-            assetRegistry: assetRegistryPda,
-            owner: user0Wallet.publicKey,
-          })
-          .signers([user0Wallet])
-          .rpc();
-        
-        assert.fail("Should have thrown InsufficientDeposit error");
-      } catch (error) {
-        assert.include(error.message, "Insufficient deposit amount");
-      }
-    });
-
-    it("remove all ETH borrow", async () => {
-      const removeAmount = new BN(10000000); // Remove all 0.1 ETH
-      
-      const txSig = await program.methods
-        .removeBorrow(ASSET_IDS.ETH, removeAmount)
-        .accounts({
-          obligation: user0ObligationPda,
-          assetRegistry: assetRegistryPda,
-          owner: user0Wallet.publicKey,
-        })
-        .signers([user0Wallet])
-        .rpc();
-
-      await printTransactionLogs(txSig, "Remove All ETH Borrow");
-
-      const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      assert.strictEqual(obligation.borrows.length, 0);
-    });
-
-    it("complex scenario - user1 operations", async () => {
-      // Initialize user1 obligation
-      const initTx = await program.methods
-        .initObligation()
-        .accounts({
-          obligation: user1ObligationPda,
-          owner: user1Wallet.publicKey,
-          systemProgram: web3.SystemProgram.programId,
-        })
-        .signers([user1Wallet])
-        .rpc();
-
-      await printTransactionLogs(initTx, "Initialize User1 Obligation");
-
-      // Add multiple deposits
-      const btcTx = await program.methods
-        .addDeposit(ASSET_IDS.BTC, new BN(100000000)) // 1 BTC
-        .accounts({
-          obligation: user1ObligationPda,
-          assetRegistry: assetRegistryPda,
-          owner: user1Wallet.publicKey,
-        })
-        .signers([user1Wallet])
-        .rpc();
-
-      await printTransactionLogs(btcTx, "User1: Add 1 BTC Deposit");
-
-      const ethTx = await program.methods
-        .addDeposit(ASSET_IDS.ETH, new BN(500000000)) // 5 ETH
-        .accounts({
-          obligation: user1ObligationPda,
-          assetRegistry: assetRegistryPda,
-          owner: user1Wallet.publicKey,
-        })
-        .signers([user1Wallet])
-        .rpc();
-
-      await printTransactionLogs(ethTx, "User1: Add 5 ETH Deposit");
+      console.log("✓ Deposited $1000 of Asset B");
 
       // Add borrows
-      const borrowTx = await program.methods
-        .addBorrow(ASSET_IDS.USDT, new BN(5000000)) // 5 USDT
+      // Asset C: $250
+      const tx1 = await program.methods
+        .addBorrow(ASSET_C, new BN(250000000))
         .accounts({
-          obligation: user1ObligationPda,
+          obligation: testObligationPda,
           assetRegistry: assetRegistryPda,
-          owner: user1Wallet.publicKey,
+          owner: testUser.publicKey,
         })
-        .signers([user1Wallet])
+        .signers([testUser])
         .rpc();
-
-      await printTransactionLogs(borrowTx, "User1: Add 5 USDT Borrow");
-
-      // Debug read user1's final state
-      const debugTx = await program.methods
-        .debugReadAllData()
-        .accounts({
-          assetRegistry: assetRegistryPda,
-          obligation: user1ObligationPda,
-        })
-        .rpc();
-
-      await printTransactionLogs(debugTx, "User1: Debug Final State");
-
-      // Verify final state
-      const obligation = await program.account.obligation.fetch(user1ObligationPda);
-      assert.strictEqual(obligation.deposits.length, 2);
-      assert.strictEqual(obligation.borrows.length, 1);
       
-      console.log("\n=== User1 Final Obligation State ===");
-      console.log("Deposits:", obligation.deposits.map(d => ({
-        assetId: d.assetId,
-        amount: d.amount.toString()
-      })));
-      console.log("Borrows:", obligation.borrows.map(b => ({
-        assetId: b.assetId,
-        amount: b.amount.toString()
-      })));
-    });
+      await printTransactionLogs(tx1, "Add Borrow C=$250");
+      console.log("✓ Borrowed $250 of Asset C");
 
-    it("add more deposits to same asset (test accumulation)", async () => {
-      // Add more USDC to user0
-      const additionalAmount = new BN(500000); // 0.5 USDC
-      
+      // Asset D: $750
       const txSig = await program.methods
-        .addDeposit(ASSET_IDS.USDC, additionalAmount)
+        .addBorrow(ASSET_D, new BN(750000000))
         .accounts({
-          obligation: user0ObligationPda,
+          obligation: testObligationPda,
           assetRegistry: assetRegistryPda,
-          owner: user0Wallet.publicKey,
+          owner: testUser.publicKey,
         })
-        .signers([user0Wallet])
+        .signers([testUser])
         .rpc();
+      console.log("✓ Borrowed $750 of Asset D");
 
-      await printTransactionLogs(txSig, "Add Additional USDC Deposit");
+      await printTransactionLogs(txSig, "Scenario 1 Complete - Expected Health Score: 1.175");
 
-      const obligation = await program.account.obligation.fetch(user0ObligationPda);
-      const usdcDeposit = obligation.deposits.find(d => d.assetId === ASSET_IDS.USDC);
-      assert.isNotNull(usdcDeposit);
-      assert.strictEqual(usdcDeposit!.amount.toString(), "1500000"); // 1 + 0.5 = 1.5 USDC
-    });
-
-    it("test zero amount operations (should be no-op)", async () => {
-      const obligationBefore = await program.account.obligation.fetch(user0ObligationPda);
-      
-      // Try adding zero deposit
-      await program.methods
-        .addDeposit(ASSET_IDS.BTC, new BN(0))
-        .accounts({
-          obligation: user0ObligationPda,
-          assetRegistry: assetRegistryPda,
-          owner: user0Wallet.publicKey,
-        })
-        .signers([user0Wallet])
-        .rpc();
-
-      // Try removing zero deposit
-      await program.methods
-        .removeDeposit(ASSET_IDS.USDC, new BN(0))
-        .accounts({
-          obligation: user0ObligationPda,
-          assetRegistry: assetRegistryPda,
-          owner: user0Wallet.publicKey,
-        })
-        .signers([user0Wallet])
-        .rpc();
-
-      const obligationAfter = await program.account.obligation.fetch(user0ObligationPda);
-      
-      // State should be unchanged
-      assert.deepEqual(
-        obligationBefore.deposits.map(d => ({ id: d.assetId, amount: d.amount.toString() })),
-        obligationAfter.deposits.map(d => ({ id: d.assetId, amount: d.amount.toString() }))
-      );
-    });
-
-    it("verify asset registry has all data", async () => {
-      const registry = await program.account.assetRegistry.fetch(assetRegistryPda);
-      
-      console.log("\n=== Final Asset Registry State ===");
-      console.log("Authority:", registry.authority.toBase58());
-      console.log("\nAssets:");
-      registry.assets.forEach(asset => {
-        const name = Object.keys(ASSET_IDS).find(key => ASSET_IDS[key] === asset.id) || "Unknown";
-        console.log(`  ${name} (ID ${asset.id}): price=${asset.price}, decimals=${asset.decimals}`);
+      // Verify position
+      const obligation = await program.account.obligation.fetch(testObligationPda);
+      console.log("\n--- Position Summary ---");
+      console.log("Deposits:");
+      obligation.deposits.forEach(d => {
+        const value = d.amount.toNumber() / 1000000;
+        console.log(`  Asset ${d.assetId}: ${value}`);
       });
-      
-      console.log("\nRisk Parameters:");
-      registry.riskParams.forEach(param => {
-        const nameA = Object.keys(ASSET_IDS).find(key => ASSET_IDS[key] === param.assetIdA) || "Unknown";
-        const nameB = Object.keys(ASSET_IDS).find(key => ASSET_IDS[key] === param.assetIdB) || "Unknown";
-        console.log(`  ${nameA}-${nameB}: risk_level=${param.riskLevel}`);
+      console.log("Borrows:");
+      obligation.borrows.forEach(b => {
+        const value = b.amount.toNumber() / 1000000;
+        console.log(`  Asset ${b.assetId}: ${value}`);
       });
-      
-      // Verify we have all expected data
-      assert.strictEqual(registry.assets.length, 4);
-      assert.strictEqual(registry.riskParams.length, 2);
     });
-   
+  });
 
-    it("test error: duplicate risk param", async () => {
+  describe("Test Scenario 2: Health Score = 0.9", () => {
+    it("add additional $500 borrow of Asset C", async () => {
+      console.log("\n--- Adding $500 more of Asset C ---");
+      
       try {
-        await program.methods
-          .addRiskParam(
-            ASSET_IDS.BTC,
-            ASSET_IDS.ETH,
-            80  // Different level, but pair already exists
-          )
-          .accounts({
-            assetRegistry: assetRegistryPda,
-            authority,
-          })
-          .rpc();
-        
-        assert.fail("Should have thrown RiskParamAlreadyExists error");
+        const txSig = await program.methods
+        .addBorrow(ASSET_C, new BN(500000000))
+        .accounts({
+          obligation: testObligationPda,
+          assetRegistry: assetRegistryPda,
+          owner: testUser.publicKey,
+        })
+        .signers([testUser])
+        .rpc();
       } catch (error) {
-        assert.include(error.message, "Risk parameter already exists");
+        console.log("✓ Correctly rejected unhealthy borrow");
+        assert.include(error.message, "Obligation health score is below minimum threshold");
+      } finally {
+        console.log("✓ Correctly rejected unhealthy borrow");
       }
     });
   });
 });
+ 

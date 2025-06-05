@@ -312,12 +312,22 @@ pub mod favorites {
 // ========== HEALTH CHECK FUNCTION ==========
 
 fn perform_health_check(obligation: &Obligation, registry: &AssetRegistry) -> Result<()> {
+    msg!("=== HEALTH CHECK START ===");
     msg!(
-        "Health check: {} deposits, {} borrows",
+        "Deposits: {}, Borrows: {}",
         obligation.deposits.len(),
         obligation.borrows.len()
     );
 
+    // If no borrows, obligation is healthy by default
+    if obligation.borrows.is_empty() {
+        msg!("Health: OK (no borrows)");
+        return Ok(());
+    }
+
+    // Calculate total deposit and borrow values
+    let mut deposit_values: Vec<(u8, u64)> = Vec::new(); // (asset_id, value)
+    let mut borrow_values: Vec<(u8, u64)> = Vec::new(); // (asset_id, value)
     let mut total_deposit_value = 0u64;
     let mut total_borrow_value = 0u64;
 
@@ -330,6 +340,7 @@ fn perform_health_check(obligation: &Obligation, registry: &AssetRegistry) -> Re
             .ok_or(ErrorCode::AssetNotFound)?;
 
         let value = deposit.amount.saturating_mul(asset.price);
+        deposit_values.push((deposit.asset_id, value));
         total_deposit_value = total_deposit_value.saturating_add(value);
 
         msg!(
@@ -350,6 +361,7 @@ fn perform_health_check(obligation: &Obligation, registry: &AssetRegistry) -> Re
             .ok_or(ErrorCode::AssetNotFound)?;
 
         let value = borrow.amount.saturating_mul(asset.price);
+        borrow_values.push((borrow.asset_id, value));
         total_borrow_value = total_borrow_value.saturating_add(value);
 
         msg!(
@@ -361,25 +373,113 @@ fn perform_health_check(obligation: &Obligation, registry: &AssetRegistry) -> Re
         );
     }
 
-    // Health check
-    if total_borrow_value > 0 {
-        let health_factor = total_deposit_value
-            .checked_div(total_borrow_value)
-            .unwrap_or(0);
-        msg!(
-            "Health: deposits={} borrows={} factor={}",
-            total_deposit_value,
-            total_borrow_value,
-            health_factor
-        );
+    msg!("Total deposit value: {}", total_deposit_value);
+    msg!("Total borrow value: {}", total_borrow_value);
 
-        if health_factor < 1 {
-            msg!("WARNING: Undercollateralized!");
+    // Complex health score calculation
+    // Health = Sum(deposit_i * Sum(borrow_share_j * risk_factor_ij)) / total_borrow
+    let mut weighted_health_score = 0u64;
+ 
+    // For each deposit
+    for (deposit_id, deposit_value) in &deposit_values {
+        msg!("Processing deposit {}: value={}", deposit_id, deposit_value);
+        let mut deposit_risk_sum = 0u64;
+
+        // For each borrow
+        for (borrow_id, borrow_value) in &borrow_values {
+            // Find risk parameter for this deposit-borrow pair
+            let risk_param = registry.risk_params.iter().find(|p| {
+                (p.asset_id_a == *deposit_id && p.asset_id_b == *borrow_id)
+                    || (p.asset_id_a == *borrow_id && p.asset_id_b == *deposit_id)
+            });
+
+            let risk_level = if let Some(param) = risk_param {
+                param.risk_level as u64
+            } else {
+                // Default risk level if pair not found
+                msg!(
+                    "  Warning: No risk param for pair {}-{}, using default 50",
+                    deposit_id,
+                    borrow_id
+                );
+                50
+            };
+
+            // Calculate borrow share (scaled by 100 for precision)
+            let borrow_share = borrow_value
+                .saturating_mul(100)
+                .checked_div(total_borrow_value)
+                .unwrap_or(0);
+
+            // Add to deposit risk sum: borrow_share * risk_level
+            let risk_contribution = borrow_share.saturating_mul(risk_level);
+            deposit_risk_sum = deposit_risk_sum.saturating_add(risk_contribution);
+
+            msg!(
+                "  Pair {}-{}: borrow_value={}, share={}%, risk={}, contribution={}",
+                deposit_id,
+                borrow_id,
+                borrow_value,
+                borrow_share,
+                risk_level,
+                risk_contribution
+            );
         }
-    } else {
-        msg!("Health: OK (no borrows)");
+
+        // Multiply deposit value by its weighted risk (divide by 100 to adjust for scaling)
+        let weighted_deposit_value = deposit_value
+            .saturating_mul(deposit_risk_sum)
+            .checked_div(100)
+            .unwrap_or(0);
+
+        weighted_health_score = weighted_health_score.saturating_add(weighted_deposit_value);
+
+        msg!(
+            "  Deposit {} total: risk_sum={}, weighted_value={}",
+            deposit_id,
+            deposit_risk_sum,
+            weighted_deposit_value
+        );
     }
 
+    // Final health score calculation
+    // We have: weighted_health_score (already divided by 100 once)
+    // Need to divide by total_borrow_value
+    // But we want to keep decimal precision, so multiply by 1000 first
+    let final_health_score_x1000 = weighted_health_score
+        .saturating_mul(1000)
+        .checked_div(total_borrow_value)
+        .unwrap_or(0)
+        .checked_div(100) // Divide by 100 for the risk scaling
+        .unwrap_or(0);
+
+    msg!("=== FINAL CALCULATION ===");
+    msg!("Weighted health score sum: {}", weighted_health_score);
+    msg!("Total borrow value: {}", total_borrow_value);
+    msg!("Health score x1000: {}", final_health_score_x1000);
+    msg!(
+        "Health score: {}.{}",
+        final_health_score_x1000 / 1000,
+        final_health_score_x1000 % 1000
+    );
+
+    // Check if healthy (health score should be >= 1000 for 1.0 or 100% collateralization)
+    if final_health_score_x1000 < 1000 {
+        msg!(
+            "⚠️ WARNING: Health score {}.{} is below 1.0 - Position at risk!",
+            final_health_score_x1000 / 1000,
+            final_health_score_x1000 % 1000
+        );
+        return Err(ErrorCode::Unhealthy.into());
+    } else {
+        msg!(
+            "✓ Health check PASSED - Score: {}.{}",
+            final_health_score_x1000 / 1000,
+            final_health_score_x1000 % 1000
+        );
+    }
+
+    msg!("=== HEALTH CHECK END ===");
     Ok(())
 }
 
@@ -476,7 +576,9 @@ pub enum ErrorCode {
     InsufficientDeposit,
     #[msg("Insufficient borrow amount")]
     InsufficientBorrow,
-    #[msg("Math overflow occurred")]
+    #[msg("Obligation health score is below minimum threshold")]
+    Unhealthy,
+    #[msg("Math operation overflowed")]
     MathOverflow,
 }
 
