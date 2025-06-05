@@ -7,68 +7,103 @@ declare_id!("8tqMBrKPc1p3XTo27d3ytxPyUyZ31mF3LpfG26WvYahf");
 pub mod favorites {
     use super::*;
 
-    pub fn initialize_pair_risk_param(
-        ctx: Context<InitializePairRiskParam>,
-        risk_level: u8,
-    ) -> Result<()> {
-        let param = &mut ctx.accounts.risk_param;
-        param.feed_a = ctx.accounts.feed_a.key();
-        param.feed_b = ctx.accounts.feed_b.key();
-        param.risk_level = risk_level;
-        Ok(())
-    }
+    // ========== ASSET REGISTRY INSTRUCTIONS ==========
 
-    pub fn update_pair_risk_param(
-        ctx: Context<UpdatePairRiskParam>,
-        new_risk_level: u8,
-    ) -> Result<()> {
-        let param = &mut ctx.accounts.risk_param;
-        param.risk_level = new_risk_level;
-        Ok(())
-    }
-
-    pub fn delete_pair_risk_param(_ctx: Context<DeletePairRiskParam>) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn calculate_risk(
-        ctx: Context<CalculateRisk>,
-        deposit_amount: u64,
-        borrow_amount: u64,
-        deposit_price: u64,
-        deposit_decimals: u8,
-        borrow_price: u64,
-        borrow_decimals: u8,
-    ) -> Result<()> {
-        let risk_param = &ctx.accounts.risk_param;
-        let risk_level = risk_param.risk_level;
-
-        // Normalize deposit and borrow to the same decimals (use 18 as common, or pick max)
-        let common_decimals = std::cmp::max(deposit_decimals, borrow_decimals);
-        let deposit_norm = normalize(deposit_amount, deposit_decimals, common_decimals)?;
-        let borrow_norm = normalize(borrow_amount, borrow_decimals, common_decimals)?;
-
-        // Calculate value in USD (or whatever price units)
-        let deposit_value = deposit_norm
-            .checked_mul(deposit_price)
-            .ok_or(ErrorCode::InvalidRiskCalculation)?;
-        let borrow_value = borrow_norm
-            .checked_mul(borrow_price)
-            .ok_or(ErrorCode::InvalidRiskCalculation)?;
-
-        // Risk score calculation (example: (deposit_value * 100) / risk_level / borrow_value)
-        let score = RiskParam::calculate_risk_score(deposit_value, risk_level, borrow_value)
-            .ok_or_else(|| {
-                msg!("Error: Risk calculation failed - likely due to arithmetic overflow or division by zero");
-                ErrorCode::InvalidRiskCalculation
-            })?;
+    pub fn initialize_asset_registry(ctx: Context<InitializeAssetRegistry>) -> Result<()> {
+        let registry = &mut ctx.accounts.asset_registry;
+        registry.authority = ctx.accounts.authority.key();
+        registry.assets = Vec::new();
+        registry.risk_params = Vec::new();
 
         msg!(
-            "Final risk calculation: deposit_value={} borrow_value={} risk_level={} => score={}",
-            deposit_value,
-            borrow_value,
+            "Asset Registry initialized with authority: {}",
+            registry.authority
+        );
+        Ok(())
+    }
+
+    pub fn add_asset(
+        ctx: Context<ManageAssetRegistry>,
+        id: u8,
+        price: u64,
+        decimals: u8,
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.asset_registry;
+
+        // Check if ID already exists
+        if registry.assets.iter().any(|a| a.id == id) {
+            return Err(ErrorCode::AssetAlreadyExists.into());
+        }
+
+        registry.assets.push(AssetInfo {
+            id,
+            price,
+            decimals,
+        });
+
+        msg!(
+            "Added asset: id={}, price={}, decimals={}",
+            id,
+            price,
+            decimals
+        );
+        Ok(())
+    }
+
+    pub fn update_asset_price(
+        ctx: Context<ManageAssetRegistry>,
+        id: u8,
+        new_price: u64,
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.asset_registry;
+
+        let asset = registry
+            .assets
+            .iter_mut()
+            .find(|a| a.id == id)
+            .ok_or(ErrorCode::AssetNotFound)?;
+
+        asset.price = new_price;
+
+        msg!("Updated asset {} price to {}", id, new_price);
+        Ok(())
+    }
+
+    pub fn add_risk_param(
+        ctx: Context<ManageAssetRegistry>,
+        asset_id_a: u8,
+        asset_id_b: u8,
+        risk_level: u8,
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.asset_registry;
+
+        // Verify both assets exist
+        if !registry.assets.iter().any(|a| a.id == asset_id_a) {
+            return Err(ErrorCode::AssetNotFound.into());
+        }
+        if !registry.assets.iter().any(|a| a.id == asset_id_b) {
+            return Err(ErrorCode::AssetNotFound.into());
+        }
+
+        // Check if pair already exists
+        if registry.risk_params.iter().any(|p| {
+            (p.asset_id_a == asset_id_a && p.asset_id_b == asset_id_b)
+                || (p.asset_id_a == asset_id_b && p.asset_id_b == asset_id_a)
+        }) {
+            return Err(ErrorCode::RiskParamAlreadyExists.into());
+        }
+
+        registry.risk_params.push(PairRiskParam {
+            asset_id_a,
+            asset_id_b,
             risk_level,
-            score
+        });
+
+        msg!(
+            "Added risk param: assets {}-{}, level={}",
+            asset_id_a,
+            asset_id_b,
+            risk_level
         );
         Ok(())
     }
@@ -85,78 +120,190 @@ pub mod favorites {
         Ok(())
     }
 
-    pub fn add_deposit(ctx: Context<AddDeposit>, asset_pubkey: Pubkey, amount: u64) -> Result<()> {
+    pub fn add_deposit(ctx: Context<ModifyObligation>, asset_id: u8, amount: u64) -> Result<()> {
         let obligation = &mut ctx.accounts.obligation;
-        obligation.add_deposit(asset_pubkey, amount)?;
+        let registry = &ctx.accounts.asset_registry;
 
-        msg!("Added deposit: asset={}, amount={}", asset_pubkey, amount);
+        // Verify asset exists
+        if !registry.assets.iter().any(|a| a.id == asset_id) {
+            return Err(ErrorCode::AssetNotFound.into());
+        }
+
+        // Add or update deposit
+        if let Some(position) = obligation
+            .deposits
+            .iter_mut()
+            .find(|p| p.asset_id == asset_id)
+        {
+            position.amount = position
+                .amount
+                .checked_add(amount)
+                .ok_or(ErrorCode::MathOverflow)?;
+        } else {
+            obligation.deposits.push(Position { asset_id, amount });
+        }
+
+        msg!("Added deposit: asset_id={}, amount={}", asset_id, amount);
 
         // Perform health check
-        perform_health_check(&ctx.accounts.obligation, ctx.remaining_accounts)?;
+        perform_health_check(&ctx.accounts.obligation, &ctx.accounts.asset_registry)?;
 
         Ok(())
     }
 
-    pub fn add_borrow(ctx: Context<AddBorrow>, asset_pubkey: Pubkey, amount: u64) -> Result<()> {
+    pub fn add_borrow(ctx: Context<ModifyObligation>, asset_id: u8, amount: u64) -> Result<()> {
         let obligation = &mut ctx.accounts.obligation;
+        let registry = &ctx.accounts.asset_registry;
 
-        // Log current state
-        msg!("Adding borrow: asset={}, amount={}", asset_pubkey, amount);
+        // Verify asset exists
+        if !registry.assets.iter().any(|a| a.id == asset_id) {
+            return Err(ErrorCode::AssetNotFound.into());
+        }
+
+        msg!("Adding borrow: asset_id={}, amount={}", asset_id, amount);
         msg!(
             "Current deposits: {}, borrows: {}",
             obligation.deposits.len(),
             obligation.borrows.len()
         );
 
-        // Add the borrow
-        obligation.add_borrows(asset_pubkey, amount)?;
+        // Add or update borrow
+        if let Some(position) = obligation
+            .borrows
+            .iter_mut()
+            .find(|p| p.asset_id == asset_id)
+        {
+            position.amount = position
+                .amount
+                .checked_add(amount)
+                .ok_or(ErrorCode::MathOverflow)?;
+        } else {
+            obligation.borrows.push(Position { asset_id, amount });
+        }
 
         // Perform health check
-        perform_health_check(&ctx.accounts.obligation, ctx.remaining_accounts)?;
+        perform_health_check(&ctx.accounts.obligation, &ctx.accounts.asset_registry)?;
 
         Ok(())
     }
 
-    pub fn remove_deposit(
-        ctx: Context<RemoveDeposit>,
-        asset_pubkey: Pubkey,
-        amount: u64,
-    ) -> Result<()> {
+    pub fn remove_deposit(ctx: Context<ModifyObligation>, asset_id: u8, amount: u64) -> Result<()> {
         let obligation = &mut ctx.accounts.obligation;
 
-        // Log current state
-        msg!(
-            "Removing deposit: asset={}, amount={}",
-            asset_pubkey,
-            amount
-        );
+        msg!("Removing deposit: asset_id={}, amount={}", asset_id, amount);
         msg!(
             "Current deposits: {}, borrows: {}",
             obligation.deposits.len(),
             obligation.borrows.len()
         );
 
-        // Remove the deposit
-        obligation.remove_deposit(asset_pubkey, amount)?;
+        if amount == 0 {
+            return Ok(());
+        }
+
+        let position = obligation
+            .deposits
+            .iter_mut()
+            .find(|p| p.asset_id == asset_id)
+            .ok_or(ErrorCode::DepositNotFound)?;
+
+        if position.amount < amount {
+            return Err(ErrorCode::InsufficientDeposit.into());
+        }
+
+        position.amount = position.amount.checked_sub(amount).unwrap();
+
+        // Remove if zero
+        if position.amount == 0 {
+            obligation.deposits.retain(|p| p.asset_id != asset_id);
+        }
 
         // Perform health check
-        perform_health_check(&ctx.accounts.obligation, ctx.remaining_accounts)?;
+        perform_health_check(&ctx.accounts.obligation, &ctx.accounts.asset_registry)?;
 
         Ok(())
     }
 
-    pub fn remove_borrow(
-        ctx: Context<RemoveBorrow>,
-        asset_pubkey: Pubkey,
-        amount: u64,
-    ) -> Result<()> {
+    pub fn remove_borrow(ctx: Context<ModifyObligation>, asset_id: u8, amount: u64) -> Result<()> {
         let obligation = &mut ctx.accounts.obligation;
-        obligation.remove_borrows(asset_pubkey, amount)?;
 
-        msg!("Removed borrow: asset={}, amount={}", asset_pubkey, amount);
+        msg!("Removing borrow: asset_id={}, amount={}", asset_id, amount);
+
+        if amount == 0 {
+            return Ok(());
+        }
+
+        let position = obligation
+            .borrows
+            .iter_mut()
+            .find(|p| p.asset_id == asset_id)
+            .ok_or(ErrorCode::BorrowNotFound)?;
+
+        if position.amount < amount {
+            return Err(ErrorCode::InsufficientBorrow.into());
+        }
+
+        position.amount = position.amount.checked_sub(amount).unwrap();
+
+        // Remove if zero
+        if position.amount == 0 {
+            obligation.borrows.retain(|p| p.asset_id != asset_id);
+        }
 
         // Perform health check
-        perform_health_check(&ctx.accounts.obligation, ctx.remaining_accounts)?;
+        perform_health_check(&ctx.accounts.obligation, &ctx.accounts.asset_registry)?;
+
+        Ok(())
+    }
+
+    // ========== DEBUG INSTRUCTION ==========
+
+    pub fn debug_read_all_data(ctx: Context<DebugReadData>) -> Result<()> {
+        let registry = &ctx.accounts.asset_registry;
+        let obligation = &ctx.accounts.obligation;
+
+        msg!("=== ASSET REGISTRY DATA ===");
+        msg!("Authority: {}", registry.authority);
+        msg!("Total assets: {}", registry.assets.len());
+
+        for asset in &registry.assets {
+            msg!(
+                "Asset: id={}, price={}, decimals={}",
+                asset.id,
+                asset.price,
+                asset.decimals
+            );
+        }
+
+        msg!("Total risk params: {}", registry.risk_params.len());
+        for param in &registry.risk_params {
+            msg!(
+                "Risk param: {}-{}, level={}",
+                param.asset_id_a,
+                param.asset_id_b,
+                param.risk_level
+            );
+        }
+
+        msg!("=== OBLIGATION DATA ===");
+        msg!("Owner: {}", obligation.owner);
+        msg!("Deposits: {}", obligation.deposits.len());
+        for deposit in &obligation.deposits {
+            msg!(
+                "  Deposit: asset_id={}, amount={}",
+                deposit.asset_id,
+                deposit.amount
+            );
+        }
+
+        msg!("Borrows: {}", obligation.borrows.len());
+        for borrow in &obligation.borrows {
+            msg!(
+                "  Borrow: asset_id={}, amount={}",
+                borrow.asset_id,
+                borrow.amount
+            );
+        }
 
         Ok(())
     }
@@ -164,40 +311,54 @@ pub mod favorites {
 
 // ========== HEALTH CHECK FUNCTION ==========
 
-fn perform_health_check(obligation: &Obligation, oracle_accounts: &[AccountInfo]) -> Result<()> {
-    msg!("Health check: {} oracles provided", oracle_accounts.len());
+fn perform_health_check(obligation: &Obligation, registry: &AssetRegistry) -> Result<()> {
+    msg!(
+        "Health check: {} deposits, {} borrows",
+        obligation.deposits.len(),
+        obligation.borrows.len()
+    );
 
-    // Create a list of all unique assets needing price data
-    let mut required_oracles = Vec::new();
-
-    // Collect deposit assets
-    for deposit in &obligation.deposits {
-        if !required_oracles.contains(&deposit.asset) {
-            required_oracles.push(deposit.asset);
-        }
-    }
-
-    // Collect borrow assets
-    for borrow in &obligation.borrows {
-        if !required_oracles.contains(&borrow.asset) {
-            required_oracles.push(borrow.asset);
-        }
-    }
- 
-    // Quick health calculation
     let mut total_deposit_value = 0u64;
     let mut total_borrow_value = 0u64;
 
-    // Sum deposits (simplified - using fixed price)
+    // Calculate deposit values
     for deposit in &obligation.deposits {
-        let value = deposit.amount.saturating_mul(1000); // Fixed price for demo
+        let asset = registry
+            .assets
+            .iter()
+            .find(|a| a.id == deposit.asset_id)
+            .ok_or(ErrorCode::AssetNotFound)?;
+
+        let value = deposit.amount.saturating_mul(asset.price);
         total_deposit_value = total_deposit_value.saturating_add(value);
+
+        msg!(
+            "Deposit: id={}, amount={}, price={}, value={}",
+            deposit.asset_id,
+            deposit.amount,
+            asset.price,
+            value
+        );
     }
 
-    // Sum borrows (simplified - using fixed price)
+    // Calculate borrow values
     for borrow in &obligation.borrows {
-        let value = borrow.amount.saturating_mul(1000); // Fixed price for demo
+        let asset = registry
+            .assets
+            .iter()
+            .find(|a| a.id == borrow.asset_id)
+            .ok_or(ErrorCode::AssetNotFound)?;
+
+        let value = borrow.amount.saturating_mul(asset.price);
         total_borrow_value = total_borrow_value.saturating_add(value);
+
+        msg!(
+            "Borrow: id={}, amount={}, price={}, value={}",
+            borrow.asset_id,
+            borrow.amount,
+            asset.price,
+            value
+        );
     }
 
     // Health check
@@ -222,73 +383,34 @@ fn perform_health_check(obligation: &Obligation, oracle_accounts: &[AccountInfo]
     Ok(())
 }
 
-// ========== RISK PARAM CONTEXTS ==========
+// ========== CONTEXTS ==========
 
 #[derive(Accounts)]
-#[instruction(risk_level: u8)]
-pub struct InitializePairRiskParam<'info> {
+pub struct InitializeAssetRegistry<'info> {
     #[account(
         init,
-        payer = payer,
-        space = 8 + 32 + 32 + 1,
-        seeds = [b"risk_pair", feed_a.key().as_ref(), feed_b.key().as_ref()],
+        payer = authority,
+        space = 8 + AssetRegistry::INIT_SPACE,
+        seeds = [b"asset_registry"],
         bump
     )]
-    pub risk_param: Account<'info, RiskParam>,
+    pub asset_registry: Account<'info, AssetRegistry>,
     #[account(mut)]
-    pub payer: Signer<'info>,
-    /// CHECK: feed identifiers only
-    pub feed_a: UncheckedAccount<'info>,
-    /// CHECK: feed identifiers only
-    pub feed_b: UncheckedAccount<'info>,
+    pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct UpdatePairRiskParam<'info> {
+pub struct ManageAssetRegistry<'info> {
     #[account(
         mut,
-        seeds = [b"risk_pair", feed_a.key().as_ref(), feed_b.key().as_ref()],
-        bump
+        seeds = [b"asset_registry"],
+        bump,
+        has_one = authority
     )]
-    pub risk_param: Account<'info, RiskParam>,
-    /// CHECK: feed identifiers only
-    pub feed_a: UncheckedAccount<'info>,
-    /// CHECK: feed identifiers only
-    pub feed_b: UncheckedAccount<'info>,
+    pub asset_registry: Account<'info, AssetRegistry>,
+    pub authority: Signer<'info>,
 }
-
-#[derive(Accounts)]
-pub struct DeletePairRiskParam<'info> {
-    #[account(
-        mut,
-        close = payer,
-        seeds = [b"risk_pair", feed_a.key().as_ref(), feed_b.key().as_ref()],
-        bump
-    )]
-    pub risk_param: Account<'info, RiskParam>,
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    /// CHECK: feed identifiers only
-    pub feed_a: UncheckedAccount<'info>,
-    /// CHECK: feed identifiers only
-    pub feed_b: UncheckedAccount<'info>,
-}
-
-#[derive(Accounts)]
-pub struct CalculateRisk<'info> {
-    #[account(
-        seeds = [b"risk_pair", deposit_feed.key().as_ref(), borrow_feed.key().as_ref()],
-        bump
-    )]
-    pub risk_param: Account<'info, RiskParam>,
-    /// CHECK: feed identifiers only
-    pub deposit_feed: UncheckedAccount<'info>,
-    /// CHECK: feed identifiers only
-    pub borrow_feed: UncheckedAccount<'info>,
-}
-
-// ========== OBLIGATION CONTEXTS ==========
 
 #[derive(Accounts)]
 pub struct InitObligation<'info> {
@@ -306,7 +428,7 @@ pub struct InitObligation<'info> {
 }
 
 #[derive(Accounts)]
-pub struct AddDeposit<'info> {
+pub struct ModifyObligation<'info> {
     #[account(
         mut,
         seeds = [b"obligation", owner.key().as_ref()],
@@ -314,51 +436,38 @@ pub struct AddDeposit<'info> {
         has_one = owner
     )]
     pub obligation: Account<'info, Obligation>,
+    #[account(
+        seeds = [b"asset_registry"],
+        bump
+    )]
+    pub asset_registry: Account<'info, AssetRegistry>,
     pub owner: Signer<'info>,
 }
 
 #[derive(Accounts)]
-pub struct AddBorrow<'info> {
+pub struct DebugReadData<'info> {
     #[account(
-        mut,
-        seeds = [b"obligation", owner.key().as_ref()],
-        bump,
-        has_one = owner
+        seeds = [b"asset_registry"],
+        bump
+    )]
+    pub asset_registry: Account<'info, AssetRegistry>,
+    #[account(
+        seeds = [b"obligation", obligation.owner.as_ref()],
+        bump
     )]
     pub obligation: Account<'info, Obligation>,
-    pub owner: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct RemoveDeposit<'info> {
-    #[account(
-        mut,
-        seeds = [b"obligation", owner.key().as_ref()],
-        bump,
-        has_one = owner
-    )]
-    pub obligation: Account<'info, Obligation>,
-    pub owner: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct RemoveBorrow<'info> {
-    #[account(
-        mut,
-        seeds = [b"obligation", owner.key().as_ref()],
-        bump,
-        has_one = owner
-    )]
-    pub obligation: Account<'info, Obligation>,
-    pub owner: Signer<'info>,
 }
 
 // ========== ERROR CODES ==========
 
 #[error_code]
 pub enum ErrorCode {
-    #[msg("Risk calculation failed: division by zero, risk_level zero, or arithmetic overflow")]
-    InvalidRiskCalculation,
+    #[msg("Asset already exists with this ID")]
+    AssetAlreadyExists,
+    #[msg("Asset not found in registry")]
+    AssetNotFound,
+    #[msg("Risk parameter already exists for this pair")]
+    RiskParamAlreadyExists,
     #[msg("Deposit not found in obligation")]
     DepositNotFound,
     #[msg("Borrow not found in obligation")]
@@ -369,153 +478,46 @@ pub enum ErrorCode {
     InsufficientBorrow,
     #[msg("Math overflow occurred")]
     MathOverflow,
-    #[msg("Missing required oracle account for health check")]
-    MissingOracleAccount,
-    #[msg("Obligation is undercollateralized")]
-    Undercollateralized,
 }
 
 // ========== DATA STRUCTURES ==========
 
+#[account]
+#[derive(InitSpace)]
+pub struct AssetRegistry {
+    pub authority: Pubkey,
+    #[max_len(20)]
+    pub assets: Vec<AssetInfo>,
+    #[max_len(50)]
+    pub risk_params: Vec<PairRiskParam>,
+}
+
 #[derive(Debug, Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, InitSpace)]
-pub struct ObligationPosition {
-    pub asset: Pubkey, // Asset's oracle's public key
+pub struct AssetInfo {
+    pub id: u8,
+    pub price: u64,
+    pub decimals: u8,
+}
+
+#[derive(Debug, Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, InitSpace)]
+pub struct PairRiskParam {
+    pub asset_id_a: u8,
+    pub asset_id_b: u8,
+    pub risk_level: u8,
+}
+
+#[derive(Debug, Clone, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, InitSpace)]
+pub struct Position {
+    pub asset_id: u8,
     pub amount: u64,
 }
 
 #[account]
-#[derive(InitSpace, Debug)]
+#[derive(InitSpace)]
 pub struct Obligation {
     pub owner: Pubkey,
     #[max_len(11)]
-    pub deposits: Vec<ObligationPosition>,
+    pub deposits: Vec<Position>,
     #[max_len(10)]
-    pub borrows: Vec<ObligationPosition>,
-}
-
-impl Obligation {
-    // Remove (i.e. subtract and delete when zero) a deposit entry.
-    pub fn remove_deposit(&mut self, asset_pubkey: Pubkey, amount_to_remove: u64) -> Result<()> {
-        if amount_to_remove == 0 {
-            return Ok(());
-        }
-        if let Some(index) = self.find_deposit_index(&asset_pubkey) {
-            let position = &mut self.deposits[index];
-            if position.amount < amount_to_remove {
-                return Err(ErrorCode::InsufficientDeposit.into());
-            }
-            position.amount = position.amount.checked_sub(amount_to_remove).unwrap();
-            // Remove the entry if the balance is now zero.
-            if position.amount == 0 {
-                self.deposits.remove(index);
-            }
-            Ok(())
-        } else {
-            Err(ErrorCode::DepositNotFound.into())
-        }
-    }
-
-    // Remove (subtract and delete) a borrow entry.
-    pub fn remove_borrows(&mut self, asset_pubkey: Pubkey, amount_to_remove: u64) -> Result<()> {
-        if amount_to_remove == 0 {
-            return Ok(());
-        }
-        if let Some(index) = self.find_borrows_index(&asset_pubkey) {
-            let position = &mut self.borrows[index];
-            if position.amount < amount_to_remove {
-                return Err(ErrorCode::InsufficientBorrow.into());
-            }
-            position.amount = position.amount.checked_sub(amount_to_remove).unwrap();
-            // Remove the entry if the remaining borrow is zero.
-            if position.amount == 0 {
-                self.borrows.remove(index);
-            }
-            Ok(())
-        } else {
-            Err(ErrorCode::BorrowNotFound.into())
-        }
-    }
-
-    fn find_deposit_index(&self, asset_pubkey: &Pubkey) -> Option<usize> {
-        self.deposits.iter().position(|p| p.asset == *asset_pubkey)
-    }
-
-    pub fn add_deposit(&mut self, asset_pubkey: Pubkey, amount_to_add: u64) -> Result<()> {
-        if amount_to_add == 0 {
-            return Ok(());
-        }
-
-        if let Some(index) = self.find_deposit_index(&asset_pubkey) {
-            let position = &mut self.deposits[index];
-            position.amount = position
-                .amount
-                .checked_add(amount_to_add)
-                .ok_or(ErrorCode::MathOverflow)?;
-        } else {
-            self.deposits.push(ObligationPosition {
-                asset: asset_pubkey,
-                amount: amount_to_add,
-            });
-        }
-        Ok(())
-    }
-
-    fn find_borrows_index(&self, asset_pubkey: &Pubkey) -> Option<usize> {
-        self.borrows.iter().position(|p| p.asset == *asset_pubkey)
-    }
-
-    pub fn add_borrows(&mut self, asset_pubkey: Pubkey, amount_to_add: u64) -> Result<()> {
-        if amount_to_add == 0 {
-            return Ok(());
-        }
-
-        if let Some(index) = self.find_borrows_index(&asset_pubkey) {
-            let position = &mut self.borrows[index];
-            position.amount = position
-                .amount
-                .checked_add(amount_to_add)
-                .ok_or(ErrorCode::MathOverflow)?;
-        } else {
-            self.borrows.push(ObligationPosition {
-                asset: asset_pubkey,
-                amount: amount_to_add,
-            });
-        }
-        Ok(())
-    }
-}
-
-#[account]
-pub struct RiskParam {
-    pub feed_a: Pubkey,
-    pub feed_b: Pubkey,
-    pub risk_level: u8,
-}
-
-impl RiskParam {
-    pub fn calculate_risk_score(
-        deposit_amount: u64,
-        risk_level: u8,
-        borrow_amount: u64,
-    ) -> Option<u64> {
-        if risk_level == 0 || borrow_amount == 0 {
-            return None;
-        }
-        Some((deposit_amount * 100) / (risk_level as u64) / borrow_amount)
-    }
-}
-
-// Helper to normalize amounts to a common decimal
-fn normalize(amount: u64, from_decimals: u8, to_decimals: u8) -> Result<u64> {
-    if from_decimals == to_decimals {
-        Ok(amount)
-    } else if from_decimals < to_decimals {
-        amount
-            .checked_mul(10u64.pow((to_decimals - from_decimals) as u32))
-            .ok_or(ErrorCode::InvalidRiskCalculation.into())
-    } else {
-        amount
-            .checked_div(10u64.pow((from_decimals - to_decimals) as u32))
-            .ok_or(ErrorCode::InvalidRiskCalculation.into())
-    }
+    pub borrows: Vec<Position>,
 }
